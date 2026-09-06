@@ -128,13 +128,14 @@ docker rm n8n
 docker run -d \
   --name n8n \
   --restart unless-stopped \
-  -p 5678:5678 \
+  --pull=never \
+  -p 127.0.0.1:5678:5678 \
   -e TZ=Asia/Dhaka \
   -e GENERIC_TIMEZONE=Asia/Dhaka \
+  -e N8N_SECURE_COOKIE=false \
   -e N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true \
   -e N8N_RUNNERS_ENABLED=true \
-  -v n8n_data:/home/node/.n8n \
-  docker.n8n.io/n8nio/n8n
+  -v n8n_data:/home/node/.n8n \ n8nio/n8n:latest
 ```
 
 Then open:
