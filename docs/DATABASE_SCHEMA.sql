@@ -1,7 +1,3 @@
--- Runs only when the PostgreSQL Docker volume is created for the first time.
--- n8n uses database `n8n`; the AI application uses a separate database `agent_app`.
-CREATE DATABASE agent_app;
-\connect agent_app
 -- AI Customer Support & Order Management V4
 -- Application database: agent_app (separate from n8n's own database)
 CREATE EXTENSION IF NOT EXISTS pg_trgm;

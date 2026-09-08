@@ -1,7 +1,7 @@
--- Runs only when the PostgreSQL Docker volume is created for the first time.
--- n8n uses database `n8n`; the AI application uses a separate database `agent_app`.
-CREATE DATABASE agent_app;
-\connect agent_app
+-- DANGEROUS: run only against the dedicated agent_app database.
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT ALL ON SCHEMA public TO PUBLIC;
 -- AI Customer Support & Order Management V4
 -- Application database: agent_app (separate from n8n's own database)
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
