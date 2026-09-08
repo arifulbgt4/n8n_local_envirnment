@@ -1,0 +1,58 @@
+name: Patch operations spreadsheet JSON expression
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-operations-json-expression.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch n8n expressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib
+
+          paths = [
+              pathlib.Path('workflows/modular/01C_OPERATIONS_INIT_V4_2.json'),
+              pathlib.Path('workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json'),
+          ]
+
+          patched = []
+          for path in paths:
+              if not path.exists():
+                  continue
+              data = json.loads(path.read_text(encoding='utf-8'))
+              changed = False
+              for node in data.get('nodes', []):
+                  if node.get('name') == '04.03 - Create Operations Spreadsheet':
+                      params = node.setdefault('parameters', {})
+                      params['jsonBody'] = "={{ ({ properties: { title: (($json.business_name || $json.business_id) + ' - ' + ($json.account_name || $json.account_key) + ' - Operations') } }) }}"
+                      changed = True
+              if changed:
+                  path.write_text(json.dumps(data, ensure_ascii=False, separators=(',', ':')) + '\n', encoding='utf-8')
+                  patched.append(str(path))
+
+          if not patched:
+              raise SystemExit('No matching 04.03 node found to patch')
+          print('Patched:', ', '.join(patched))
+          PY
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f .github/workflows/patch-operations-json-expression.yml
+          git add workflows/modular/01C_OPERATIONS_INIT_V4_2.json workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json
+          git commit -m 'Fix operations spreadsheet JSON expression syntax'
+          git push origin HEAD:master
