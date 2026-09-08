@@ -21,3 +21,7 @@ The previous single workflow contains 170+ nodes and can put heavy pressure on t
 ## Activation
 
 Start with all five workflows inactive. Run setup steps 02 → 03 → 04 manually, then catalog/human sync and health checks. Activate the production schedules/webhooks only after credentials and IDs are verified.
+
+## Idempotent reruns
+
+- Setup and operations-tab creation are idempotent: if no tabs are missing, the workflow skips the Google Sheets `batchUpdate` call instead of sending an empty `requests` array.
