@@ -25,3 +25,14 @@ Start with all five workflows inactive. Run setup steps 02 → 03 → 04 manuall
 ## Idempotent reruns
 
 - Setup and operations-tab creation are idempotent: if no tabs are missing, the workflow skips the Google Sheets `batchUpdate` call instead of sending an empty `requests` array.
+
+## V4.2 setup execution split
+
+Recent n8n editor/import builds may not expose every Manual Trigger when several independent Manual Trigger branches live in one workflow JSON. To make each setup phase reliably executable, the former combined setup workflow is split into four files:
+
+1. `01_SETUP_CONFIG_V4_2.json` — Reset + Install only.
+2. `01B_CONTROL_SYNC_V4_2.json` — Manual Control Spreadsheet sync plus the production 5-minute sync schedule.
+3. `01C_OPERATIONS_INIT_V4_2.json` — Manual account Operations Spreadsheet initialization.
+4. `01D_SYSTEM_HEALTH_V4_2.json` — Manual health query.
+
+Run them in this order after filling `01_BUSINESSES` and `02_ACCOUNTS`: `01B_CONTROL_SYNC_V4_2` → `01C_OPERATIONS_INIT_V4_2` → `01D_SYSTEM_HEALTH_V4_2`. Keep production schedules unpublished/inactive until manual testing passes.
