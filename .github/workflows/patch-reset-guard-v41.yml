@@ -1,0 +1,210 @@
+name: Patch V4 reset guard to env-free confirmation
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/patch-reset-guard-v41.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch n8n workflow and reset docs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, uuid
+
+          workflow_path = pathlib.Path('workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json')
+          data = json.loads(workflow_path.read_text(encoding='utf-8'))
+          nodes = data.get('nodes', [])
+          connections = data.setdefault('connections', {})
+
+          guard_name = '01.01 - Reset Safety Guard'
+          confirmation_name = '01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)'
+          trigger_name = '01 - RESET - Entire AI Agent Database (DEV ONLY)'
+
+          by_name = {n.get('name'): n for n in nodes}
+          if guard_name not in by_name:
+              raise SystemExit(f'Missing required node: {guard_name}')
+          guard = by_name[guard_name]
+
+          # Make the destructive guard independent of n8n environment-variable access.
+          guard.setdefault('parameters', {})['jsCode'] = r'''const allItems = $input.all();
+const input = allItems.length > 0 ? (allItems[0].json || {}) : {};
+const confirmation = String(input.reset_confirmation || '').trim();
+const expected = 'RESET_AI_AGENT_DATABASE';
+
+if (confirmation !== expected) {
+  throw new Error(
+    'Reset blocked safely. Open node "01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)", ' +
+    'set reset_confirmation exactly to "' + expected + '", then execute Step 01 from the reset trigger. ' +
+    'After the reset finishes, change the field back to the placeholder value. Current value: ' +
+    (confirmation || '(empty)')
+  );
+}
+
+return allItems;'''
+
+          # Add a deliberately-invalid confirmation input. A beginner must consciously edit it.
+          if confirmation_name not in by_name:
+              gx, gy = guard.get('position', [-2200, -900])
+              confirmation_node = {
+                  'parameters': {
+                      'assignments': {
+                          'assignments': [
+                              {
+                                  'id': str(uuid.uuid4()),
+                                  'name': 'reset_confirmation',
+                                  'value': 'CHANGE_ME__TYPE_RESET_AI_AGENT_DATABASE',
+                                  'type': 'string'
+                              }
+                          ]
+                      },
+                      'options': {}
+                  },
+                  'type': 'n8n-nodes-base.set',
+                  'typeVersion': 3.4,
+                  'position': [gx - 260, gy],
+                  'id': str(uuid.uuid4()),
+                  'name': confirmation_name
+              }
+              nodes.append(confirmation_node)
+
+              # Route every existing incoming edge to the guard through the confirmation node.
+              def retarget(value):
+                  if isinstance(value, dict):
+                      if value.get('node') == guard_name:
+                          value['node'] = confirmation_name
+                      for v in value.values():
+                          retarget(v)
+                  elif isinstance(value, list):
+                      for v in value:
+                          retarget(v)
+
+              retarget(connections)
+              connections[confirmation_name] = {
+                  'main': [[{'node': guard_name, 'type': 'main', 'index': 0}]]
+              }
+          else:
+              # Ensure an existing confirmation node still points to the guard.
+              connections[confirmation_name] = {
+                  'main': [[{'node': guard_name, 'type': 'main', 'index': 0}]]
+              }
+
+          # Make the top sticky note explain the reset UX.
+          start_note = next((n for n in nodes if n.get('name') == 'README - Start Here'), None)
+          reset_note = (
+              '\n\n**Reset safety (V4.1)**\n'
+              '- Reset no longer reads `$env`.\n'
+              '- Open `01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)`.\n'
+              '- Temporarily set `reset_confirmation` to `RESET_AI_AGENT_DATABASE`.\n'
+              '- Run Step 01 from `01 - RESET - Entire AI Agent Database (DEV ONLY)`.\n'
+              '- After reset, restore the placeholder value.\n'
+              '- Executing `01.01 - Reset Safety Guard` directly without input is expected to stop safely.\n'
+          )
+          if start_note is not None:
+              content = start_note.setdefault('parameters', {}).get('content', '')
+              if '**Reset safety (V4.1)**' not in content:
+                  start_note['parameters']['content'] = content + reset_note
+
+          # Validate important reset wiring and all connection references.
+          names = {n.get('name') for n in nodes}
+          if confirmation_name not in names:
+              raise SystemExit('Confirmation node was not created')
+          if '$env' in guard.get('parameters', {}).get('jsCode', ''):
+              raise SystemExit('Reset guard still contains $env')
+          if confirmation_name not in connections:
+              raise SystemExit('Confirmation node has no outgoing connection')
+
+          broken = []
+          def check_refs(value):
+              if isinstance(value, dict):
+                  if 'node' in value and value['node'] not in names:
+                      broken.append(value['node'])
+                  for v in value.values():
+                      check_refs(v)
+              elif isinstance(value, list):
+                  for v in value:
+                      check_refs(v)
+          for source, outputs in connections.items():
+              if source not in names:
+                  broken.append(source)
+              check_refs(outputs)
+          if broken:
+              raise SystemExit('Broken connection refs: ' + ', '.join(sorted(set(broken))))
+
+          # Save compact import-ready JSON.
+          workflow_path.write_text(json.dumps(data, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
+
+          # Remove obsolete env-based reset flags from env example.
+          env_path = pathlib.Path('.env.example')
+          if env_path.exists():
+              lines = env_path.read_text(encoding='utf-8').splitlines()
+              lines = [ln for ln in lines if 'ALLOW_DESTRUCTIVE_RESET' not in ln and 'N8N_BLOCK_ENV_ACCESS_IN_NODE' not in ln]
+              env_path.write_text('\n'.join(lines).rstrip() + '\n', encoding='utf-8')
+
+          # Remove old env-reset instruction lines from Markdown and add definitive instructions.
+          for md in [pathlib.Path('README.md'), pathlib.Path('DOCUMENTATION.md'), *pathlib.Path('docs').glob('*.md')]:
+              if not md.exists():
+                  continue
+              text = md.read_text(encoding='utf-8')
+              filtered = '\n'.join(
+                  line for line in text.splitlines()
+                  if 'ALLOW_DESTRUCTIVE_RESET' not in line and 'N8N_BLOCK_ENV_ACCESS_IN_NODE' not in line
+              ).rstrip() + '\n'
+              md.write_text(filtered, encoding='utf-8')
+
+          execution_doc = pathlib.Path('docs/WORKFLOW_EXECUTION.md')
+          section = r'''
+
+## Reset safety — V4.1 (env-free)
+
+Step 01 is destructive and is intended only for a fresh/dev reset or an intentional full application-data reset. It no longer requires `$env` or any environment-access setting in n8n.
+
+1. Open **`01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)`**.
+2. Its default `reset_confirmation` value is intentionally invalid: `CHANGE_ME__TYPE_RESET_AI_AGENT_DATABASE`.
+3. Only when you really want the reset, temporarily change it to exactly: `RESET_AI_AGENT_DATABASE`.
+4. Execute **`01 - RESET - Entire AI Agent Database (DEV ONLY)`** so the confirmation value flows into the safety guard.
+5. `01.01 - Reset Safety Guard` validates the value before any destructive SQL can run.
+6. After reset succeeds, change the confirmation field back to the placeholder and save the workflow.
+
+Do **not** execute the safety guard by itself. If it receives no confirmation input, it intentionally stops with a safe error and the database is not reset.
+'''
+          if execution_doc.exists():
+              text = execution_doc.read_text(encoding='utf-8')
+              if '## Reset safety — V4.1 (env-free)' not in text:
+                  execution_doc.write_text(text.rstrip() + section + '\n', encoding='utf-8')
+
+          print('Patched workflow nodes:', len(nodes))
+          print('Reset guard is env-free:', '$env' not in guard['parameters']['jsCode'])
+          print('Confirmation node:', confirmation_name)
+          print('Trigger present:', trigger_name in names)
+          PY
+
+          # Ensure obsolete reset-env flags are gone from the user-facing project files.
+          ! grep -R --line-number --exclude-dir=.git --exclude='patch-reset-guard-v41.yml' \
+            -E 'ALLOW_DESTRUCTIVE_RESET|N8N_BLOCK_ENV_ACCESS_IN_NODE' \
+            README.md DOCUMENTATION.md docs .env.example workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json
+
+      - name: Commit V4.1 reset safety patch and remove temporary action
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -f .github/workflows/patch-reset-guard-v41.yml
+          git add -A
+          git commit -m "Patch V4 reset guard to env-free confirmation"
+          git push origin HEAD:master
