@@ -1,4 +1,4 @@
-name: Decode n8n workflow JSON
+name: Restore and validate n8n workflow JSON
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  decode:
+  restore:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -17,47 +17,58 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Decode workflow when stored as base64
+      - name: Restore import-ready workflow from verified XZ source
         shell: bash
         run: |
           set -euo pipefail
-          FILE="workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json"
+          SOURCE="workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json.xz"
+          TARGET="workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json"
 
-          if [ ! -f "$FILE" ]; then
-            echo "Workflow file not found: $FILE" >&2
-            exit 1
-          fi
-
-          FIRST_CHAR="$(head -c 1 "$FILE" || true)"
-          if [ "$FIRST_CHAR" = "{" ]; then
-            echo "Workflow is already JSON; nothing to do."
-            exit 0
-          fi
-
-          base64 --decode "$FILE" > "$FILE.tmp"
-          python -m json.tool "$FILE.tmp" >/dev/null
-          mv "$FILE.tmp" "$FILE"
+          test -f "$SOURCE"
+          xz --test "$SOURCE"
+          xz --decompress --stdout "$SOURCE" > "$TARGET.tmp"
 
           python - <<'PY'
           import json
-          p = 'workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json'
+          p = 'workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json.tmp'
           with open(p, encoding='utf-8') as f:
               data = json.load(f)
-          assert isinstance(data, dict)
-          assert len(data.get('nodes', [])) >= 100, 'Unexpectedly small workflow'
-          print('Validated nodes:', len(data.get('nodes', [])))
+          assert isinstance(data, dict), 'Workflow root must be an object'
+          nodes = data.get('nodes', [])
+          assert len(nodes) == 170, f'Expected 170 nodes, found {len(nodes)}'
+          names = {n.get('name') for n in nodes}
+          required = {
+              '01 - RESET - Entire AI Agent Database (DEV ONLY)',
+              '02 - INSTALL - Bootstrap System',
+              '03 - SYNC - Control Spreadsheet -> PostgreSQL',
+              '04 - INIT - Account Operations Spreadsheets',
+              '05 - SYNC - Products + FAQ Catalog',
+              '06 - SYNC - Human Control From Sheets',
+              '07 - TEST - System Health',
+              '08 - FOLLOW-UP - Manual Test',
+          }
+          missing = sorted(required - names)
+          assert not missing, f'Missing numbered execution nodes: {missing}'
+          print('Workflow JSON valid. Nodes:', len(nodes))
           PY
 
-      - name: Commit decoded workflow if changed
+          mv "$TARGET.tmp" "$TARGET"
+          ACTUAL_SHA="$(git hash-object "$TARGET")"
+          EXPECTED_SHA="ff7f15ef8e2843f045a550659d68035890992586"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+          echo "Verified workflow git blob SHA: $ACTUAL_SHA"
+
+      - name: Commit restored workflow if changed
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json; then
-            echo "No workflow change to commit."
+          TARGET="workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json"
+          if git diff --quiet -- "$TARGET"; then
+            echo "Workflow is already the verified JSON."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json
-          git commit -m "Decode import-ready n8n workflow JSON"
+          git add "$TARGET"
+          git commit -m "Restore validated import-ready n8n V4 workflow"
           git push origin HEAD:master
