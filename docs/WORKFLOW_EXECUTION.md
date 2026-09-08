@@ -6,10 +6,18 @@ After importing the workflow and binding credentials, use this order.
 
 Not required for normal upgrades. This is destructive to the dedicated `agent_app` database only.
 
-To deliberately enable it, set in `.env`:
+### Reset safety — V4.1 (env-free)
 
+Step 01 no longer requires `$env`, `.env` reset flags, or any n8n environment-access setting.
 
-Restart n8n, execute the step, then immediately clear the variable and restart again.
+1. Open **`01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)`**.
+2. Its default `reset_confirmation` value is intentionally invalid: `CHANGE_ME__TYPE_RESET_AI_AGENT_DATABASE`.
+3. Only when you really want the reset, temporarily change it to exactly: `RESET_AI_AGENT_DATABASE`.
+4. Execute **`01 - RESET - Entire AI Agent Database (DEV ONLY)`** so the confirmation value flows into the safety guard.
+5. `01.01 - Reset Safety Guard` validates the value before `01.02 - Drop + Recreate Application Database Schema` can run.
+6. After reset succeeds, change the confirmation field back to `CHANGE_ME__TYPE_RESET_AI_AGENT_DATABASE` and save the workflow.
+
+Do **not** execute `01.01 - Reset Safety Guard` by itself. If it receives no valid confirmation input, it intentionally stops with a safe error and the database is not reset.
 
 ## 02 - INSTALL - Bootstrap System
 
@@ -51,17 +59,3 @@ After the setup tests pass, publish the workflow. Production triggers are labele
 - `PROD - Catalog Sync Schedule`
 - `PROD - Human Control Sync Schedule`
 - `PROD - Follow-up Schedule`
-
-## Reset safety — V4.1 (env-free)
-
-Step 01 is destructive and is intended only for a fresh/dev reset or an intentional full application-data reset. It no longer requires `$env` or any environment-access setting in n8n.
-
-1. Open **`01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)`**.
-2. Its default `reset_confirmation` value is intentionally invalid: `CHANGE_ME__TYPE_RESET_AI_AGENT_DATABASE`.
-3. Only when you really want the reset, temporarily change it to exactly: `RESET_AI_AGENT_DATABASE`.
-4. Execute **`01 - RESET - Entire AI Agent Database (DEV ONLY)`** so the confirmation value flows into the safety guard.
-5. `01.01 - Reset Safety Guard` validates the value before any destructive SQL can run.
-6. After reset succeeds, change the confirmation field back to the placeholder and save the workflow.
-
-Do **not** execute the safety guard by itself. If it receives no confirmation input, it intentionally stops with a safe error and the database is not reset.
-
