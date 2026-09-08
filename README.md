@@ -39,3 +39,11 @@ Human handoff is **silent**: when AI decides a customer genuinely needs a human,
 ## Security
 
 The Control Spreadsheet can contain Meta access tokens because this design is intentionally spreadsheet-driven. Treat it as a secrets-bearing document: restrict sharing, enable account MFA, and rotate exposed tokens. Never commit real tokens, app secrets, Google credentials, database passwords, or `.env` to GitHub.
+
+<!-- V4.2-MODULAR-START -->
+## V4.2 modular workflow package
+
+For normal use, import the five files under `workflows/modular/` instead of opening the 170+ node monolith. This reduces editor-side memory/rendering pressure and isolates setup, catalog sync, human control, follow-ups, and Meta messaging. See `docs/MODULAR_WORKFLOWS.md` for the exact import/activation order.
+
+The legacy `workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json` remains available for compatibility, but should not be active at the same time as the modular workflows.
+<!-- V4.2-MODULAR-END -->

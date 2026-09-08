@@ -59,3 +59,9 @@ After the setup tests pass, publish the workflow. Production triggers are labele
 - `PROD - Catalog Sync Schedule`
 - `PROD - Human Control Sync Schedule`
 - `PROD - Follow-up Schedule`
+
+<!-- V4.2-MODULAR-START -->
+## V4.2 modular import
+
+Use the five files in `workflows/modular/`. Run setup from `01_SETUP_CONFIG_V4_2.json`; catalog, human control, follow-up, and Meta runtime each live in their own workflow. Deactivate the old monolith before activating the new production schedules/webhooks.
+<!-- V4.2-MODULAR-END -->
