@@ -1,8 +1,10 @@
-name: Restore and validate n8n workflow JSON
+name: Restore and validate n8n V4 workflow
 
 on:
   push:
     branches: [master]
+    paths:
+      - 'workflow_chunks/part-10.b64part'
   workflow_dispatch:
 
 permissions:
@@ -17,23 +19,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Restore import-ready workflow from verified XZ source
+      - name: Rebuild and validate import-ready workflow
         shell: bash
         run: |
           set -euo pipefail
-          SOURCE="workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json.xz"
           TARGET="workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json"
+          PARTS_DIR="workflow_chunks"
+          TMP_B64="/tmp/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json.xz.b64"
+          TMP_XZ="/tmp/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json.xz"
+          TMP_JSON="/tmp/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json"
 
-          test -f "$SOURCE"
-          xz --test "$SOURCE"
-          xz --decompress --stdout "$SOURCE" > "$TARGET.tmp"
+          test -f "$PARTS_DIR/part-00.b64part"
+          test -f "$PARTS_DIR/part-10.b64part"
+          cat "$PARTS_DIR"/part-*.b64part > "$TMP_B64"
+          base64 --decode "$TMP_B64" > "$TMP_XZ"
+          xz --test "$TMP_XZ"
+          xz --decompress --stdout "$TMP_XZ" > "$TMP_JSON"
 
           python - <<'PY'
           import json
-          p = 'workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json.tmp'
+          p = '/tmp/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json'
           with open(p, encoding='utf-8') as f:
               data = json.load(f)
-          assert isinstance(data, dict), 'Workflow root must be an object'
+
           nodes = data.get('nodes', [])
           assert len(nodes) == 170, f'Expected 170 nodes, found {len(nodes)}'
           names = {n.get('name') for n in nodes}
@@ -49,26 +57,50 @@ jobs:
           }
           missing = sorted(required - names)
           assert not missing, f'Missing numbered execution nodes: {missing}'
-          print('Workflow JSON valid. Nodes:', len(nodes))
+
+          broken = []
+          def walk(v):
+              if isinstance(v, dict):
+                  if 'node' in v and v['node'] not in names:
+                      broken.append(v['node'])
+                  for x in v.values():
+                      walk(x)
+              elif isinstance(v, list):
+                  for x in v:
+                      walk(x)
+          for src, outs in data.get('connections', {}).items():
+              if src not in names:
+                  broken.append(src)
+              walk(outs)
+          assert not broken, f'Broken workflow connection references: {sorted(set(broken))}'
+          print('Validated workflow nodes:', len(nodes))
+          print('Validated connection sources:', len(data.get('connections', {})))
           PY
 
-          mv "$TARGET.tmp" "$TARGET"
-          ACTUAL_SHA="$(git hash-object "$TARGET")"
+          ACTUAL_SHA="$(git hash-object "$TMP_JSON")"
           EXPECTED_SHA="ff7f15ef8e2843f045a550659d68035890992586"
           test "$ACTUAL_SHA" = "$EXPECTED_SHA"
-          echo "Verified workflow git blob SHA: $ACTUAL_SHA"
+          echo "Verified workflow blob SHA: $ACTUAL_SHA"
 
-      - name: Commit restored workflow if changed
+          mkdir -p "$(dirname "$TARGET")"
+          cp "$TMP_JSON" "$TARGET"
+
+      - name: Commit final V4 repository state
         shell: bash
         run: |
           set -euo pipefail
-          TARGET="workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json"
-          if git diff --quiet -- "$TARGET"; then
-            echo "Workflow is already the verified JSON."
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$TARGET"
-          git commit -m "Restore validated import-ready n8n V4 workflow"
+
+          git add workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json
+          git rm -rf workflow_chunks
+          git rm -f workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json.xz || true
+          git rm -f .github/workflows/decode-n8n-workflow.yml
+
+          if git diff --cached --quiet; then
+            echo "No repository changes required."
+            exit 0
+          fi
+
+          git commit -m "Finalize validated n8n AI customer support V4"
           git push origin HEAD:master
