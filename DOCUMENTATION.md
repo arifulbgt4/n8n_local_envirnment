@@ -107,7 +107,6 @@ Not required for normal upgrades. This is destructive to the dedicated `agent_ap
 
 To deliberately enable it, set in `.env`:
 
-`ALLOW_DESTRUCTIVE_RESET=RESET_AI_AGENT_DATABASE`
 
 Restart n8n, execute the step, then immediately clear the variable and restart again.
 
