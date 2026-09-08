@@ -2,9 +2,10 @@ name: Patch V4 reset guard to env-free confirmation
 
 on:
   push:
-    branches: [master]
+    branches:
+      - master
     paths:
-      - '.github/workflows/patch-reset-guard-v41.yml'
+      - .github/workflows/patch-reset-guard-v41.yml
   workflow_dispatch:
 
 permissions:
@@ -19,186 +20,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Patch n8n workflow and reset docs
+      - name: Patch workflow and docs
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import json, pathlib, uuid
+          echo 'aW1wb3J0IGpzb24sIHBhdGhsaWIsIHV1aWQKCndvcmtmbG93X3BhdGggPSBwYXRobGliLlBhdGgoIndvcmtmbG93cy9BSV9DVVNUT01FUl9TVVBQT1JUX1Y0X0NPTVBMRVRFLmpzb24iKQpkYXRhID0ganNvbi5sb2Fkcyh3b3JrZmxvd19wYXRoLnJlYWRfdGV4dChlbmNvZGluZz0idXRmLTgiKSkKbm9kZXMgPSBkYXRhLmdldCgibm9kZXMiLCBbXSkKY29ubmVjdGlvbnMgPSBkYXRhLnNldGRlZmF1bHQoImNvbm5lY3Rpb25zIiwge30pCgpndWFyZF9uYW1lID0gIjAxLjAxIC0gUmVzZXQgU2FmZXR5IEd1YXJkIgpjb25maXJtYXRpb25fbmFtZSA9ICIwMS4wMCAtIEVudGVyIFJlc2V0IENvbmZpcm1hdGlvbiAoRURJVCBCRUZPUkUgUkVTRVQpIgp0cmlnZ2VyX25hbWUgPSAiMDEgLSBSRVNFVCAtIEVudGlyZSBBSSBBZ2VudCBEYXRhYmFzZSAoREVWIE9OTFkpIgoKYnlfbmFtZSA9IHtuLmdldCgibmFtZSIpOiBuIGZvciBuIGluIG5vZGVzfQppZiBndWFyZF9uYW1lIG5vdCBpbiBieV9uYW1lOgogICAgcmFpc2UgU3lzdGVtRXhpdChmIk1pc3NpbmcgcmVxdWlyZWQgbm9kZToge2d1YXJkX25hbWV9IikKZ3VhcmQgPSBieV9uYW1lW2d1YXJkX25hbWVdCgpndWFyZFsicGFyYW1ldGVycyJdWyJqc0NvZGUiXSA9ICIiImNvbnN0IGFsbEl0ZW1zID0gJGlucHV0LmFsbCgpOwpjb25zdCBpbnB1dCA9IGFsbEl0ZW1zLmxlbmd0aCA+IDAgPyAoYWxsSXRlbXNbMF0uanNvbiB8fCB7fSkgOiB7fTsKY29uc3QgY29uZmlybWF0aW9uID0gU3RyaW5nKGlucHV0LnJlc2V0X2NvbmZpcm1hdGlvbiB8fCAnJykudHJpbSgpOwpjb25zdCBleHBlY3RlZCA9ICdSRVNFVF9BSV9BR0VOVF9EQVRBQkFTRSc7CgppZiAoY29uZmlybWF0aW9uICE9PSBleHBlY3RlZCkgewogIHRocm93IG5ldyBFcnJvcigKICAgICdSZXNldCBibG9ja2VkIHNhZmVseS4gT3BlbiBub2RlICIwMS4wMCAtIEVudGVyIFJlc2V0IENvbmZpcm1hdGlvbiAoRURJVCBCRUZPUkUgUkVTRVQpIiwgJyArCiAgICAnc2V0IHJlc2V0X2NvbmZpcm1hdGlvbiBleGFjdGx5IHRvICInICsgZXhwZWN0ZWQgKyAnIiwgdGhlbiBleGVjdXRlIFN0ZXAgMDEgZnJvbSB0aGUgcmVzZXQgdHJpZ2dlci4gJyArCiAgICAnQWZ0ZXIgdGhlIHJlc2V0IGZpbmlzaGVzLCBjaGFuZ2UgdGhlIGZpZWxkIGJhY2sgdG8gdGhlIHBsYWNlaG9sZGVyIHZhbHVlLiBDdXJyZW50IHZhbHVlOiAnICsKICAgIChjb25maXJtYXRpb24gfHwgJyhlbXB0eSknKQogICk7Cn0KCnJldHVybiBhbGxJdGVtczsiIiIKCmlmIGNvbmZpcm1hdGlvbl9uYW1lIG5vdCBpbiBieV9uYW1lOgogICAgZ3gsIGd5ID0gZ3VhcmQuZ2V0KCJwb3NpdGlvbiIsIFstMjc4MCwgLTE2MDBdKQogICAgY29uZmlybWF0aW9uX25vZGUgPSB7CiAgICAgICAgInBhcmFtZXRlcnMiOiB7CiAgICAgICAgICAgICJhc3NpZ25tZW50cyI6IHsKICAgICAgICAgICAgICAgICJhc3NpZ25tZW50cyI6IFt7CiAgICAgICAgICAgICAgICAgICAgImlkIjogc3RyKHV1aWQudXVpZDQoKSksCiAgICAgICAgICAgICAgICAgICAgIm5hbWUiOiAicmVzZXRfY29uZmlybWF0aW9uIiwKICAgICAgICAgICAgICAgICAgICAidmFsdWUiOiAiQ0hBTkdFX01FX19UWVBFX1JFU0VUX0FJX0FHRU5UX0RBVEFCQVNFIiwKICAgICAgICAgICAgICAgICAgICAidHlwZSI6ICJzdHJpbmciCiAgICAgICAgICAgICAgICB9XQogICAgICAgICAgICB9LAogICAgICAgICAgICAib3B0aW9ucyI6IHt9CiAgICAgICAgfSwKICAgICAgICAidHlwZSI6ICJuOG4tbm9kZXMtYmFzZS5zZXQiLAogICAgICAgICJ0eXBlVmVyc2lvbiI6IDMuNCwKICAgICAgICAicG9zaXRpb24iOiBbZ3ggLSAyNDAsIGd5XSwKICAgICAgICAiaWQiOiBzdHIodXVpZC51dWlkNCgpKSwKICAgICAgICAibmFtZSI6IGNvbmZpcm1hdGlvbl9uYW1lCiAgICB9CiAgICBub2Rlcy5hcHBlbmQoY29uZmlybWF0aW9uX25vZGUpCgogICAgZGVmIHJldGFyZ2V0KHZhbHVlKToKICAgICAgICBpZiBpc2luc3RhbmNlKHZhbHVlLCBkaWN0KToKICAgICAgICAgICAgaWYgdmFsdWUuZ2V0KCJub2RlIikgPT0gZ3VhcmRfbmFtZToKICAgICAgICAgICAgICAgIHZhbHVlWyJub2RlIl0gPSBjb25maXJtYXRpb25fbmFtZQogICAgICAgICAgICBmb3IgdiBpbiB2YWx1ZS52YWx1ZXMoKToKICAgICAgICAgICAgICAgIHJldGFyZ2V0KHYpCiAgICAgICAgZWxpZiBpc2luc3RhbmNlKHZhbHVlLCBsaXN0KToKICAgICAgICAgICAgZm9yIHYgaW4gdmFsdWU6CiAgICAgICAgICAgICAgICByZXRhcmdldCh2KQogICAgcmV0YXJnZXQoY29ubmVjdGlvbnMpCgpjb25uZWN0aW9uc1tjb25maXJtYXRpb25fbmFtZV0gPSB7CiAgICAibWFpbiI6IFtbeyJub2RlIjogZ3VhcmRfbmFtZSwgInR5cGUiOiAibWFpbiIsICJpbmRleCI6IDB9XV0KfQoKaWYgdHJpZ2dlcl9uYW1lIGluIGNvbm5lY3Rpb25zOgogICAgY29ubmVjdGlvbnNbdHJpZ2dlcl9uYW1lXSA9IHsKICAgICAgICAibWFpbiI6IFtbeyJub2RlIjogY29uZmlybWF0aW9uX25hbWUsICJ0eXBlIjogIm1haW4iLCAiaW5kZXgiOiAwfV1dCiAgICB9CgpzdGFydF9ub3RlID0gbmV4dCgobiBmb3IgbiBpbiBub2RlcyBpZiBuLmdldCgibmFtZSIpID09ICJSRUFETUUgLSBTdGFydCBIZXJlIiksIE5vbmUpCmlmIHN0YXJ0X25vdGUgaXMgbm90IE5vbmU6CiAgICBtYXJrZXIgPSAiKipSZXNldCBzYWZldHkgKFY0LjEpKioiCiAgICBleHRyYSA9ICgKICAgICAgICAiXG5cbioqUmVzZXQgc2FmZXR5IChWNC4xKSoqXG4iCiAgICAgICAgIi0gUmVzZXQgaXMgYCRlbnZgLWZyZWUuXG4iCiAgICAgICAgIi0gT3BlbiBgMDEuMDAgLSBFbnRlciBSZXNldCBDb25maXJtYXRpb24gKEVESVQgQkVGT1JFIFJFU0VUKWAuXG4iCiAgICAgICAgIi0gVGVtcG9yYXJpbHkgc2V0IGByZXNldF9jb25maXJtYXRpb25gIHRvIGBSRVNFVF9BSV9BR0VOVF9EQVRBQkFTRWAuXG4iCiAgICAgICAgIi0gUnVuIGAwMSAtIFJFU0VUIC0gRW50aXJlIEFJIEFnZW50IERhdGFiYXNlIChERVYgT05MWSlgLlxuIgogICAgICAgICItIEFmdGVyIHJlc2V0LCByZXN0b3JlIHRoZSBwbGFjZWhvbGRlciB2YWx1ZS5cbiIKICAgICAgICAiLSBSdW5uaW5nIHRoZSBndWFyZCBkaXJlY3RseSB3aXRob3V0IGNvbmZpcm1hdGlvbiBpbnRlbnRpb25hbGx5IHN0b3BzIHNhZmVseS5cbiIKICAgICkKICAgIGNvbnRlbnQgPSBzdGFydF9ub3RlLnNldGRlZmF1bHQoInBhcmFtZXRlcnMiLCB7fSkuZ2V0KCJjb250ZW50IiwgIiIpCiAgICBpZiBtYXJrZXIgbm90IGluIGNvbnRlbnQ6CiAgICAgICAgc3RhcnRfbm90ZVsicGFyYW1ldGVycyJdWyJjb250ZW50Il0gPSBjb250ZW50ICsgZXh0cmEKCm5hbWVzID0ge24uZ2V0KCJuYW1lIikgZm9yIG4gaW4gbm9kZXN9CmFzc2VydCBjb25maXJtYXRpb25fbmFtZSBpbiBuYW1lcwphc3NlcnQgIiRlbnYiIG5vdCBpbiBndWFyZC5nZXQoInBhcmFtZXRlcnMiLCB7fSkuZ2V0KCJqc0NvZGUiLCAiIikKYXNzZXJ0IGNvbmZpcm1hdGlvbl9uYW1lIGluIGNvbm5lY3Rpb25zCmJyb2tlbiA9IFtdCmRlZiBjaGVja19yZWZzKHZhbHVlKToKICAgIGlmIGlzaW5zdGFuY2UodmFsdWUsIGRpY3QpOgogICAgICAgIGlmICJub2RlIiBpbiB2YWx1ZSBhbmQgdmFsdWVbIm5vZGUiXSBub3QgaW4gbmFtZXM6CiAgICAgICAgICAgIGJyb2tlbi5hcHBlbmQodmFsdWVbIm5vZGUiXSkKICAgICAgICBmb3IgdiBpbiB2YWx1ZS52YWx1ZXMoKToKICAgICAgICAgICAgY2hlY2tfcmVmcyh2KQogICAgZWxpZiBpc2luc3RhbmNlKHZhbHVlLCBsaXN0KToKICAgICAgICBmb3IgdiBpbiB2YWx1ZToKICAgICAgICAgICAgY2hlY2tfcmVmcyh2KQpmb3Igc291cmNlLCBvdXRwdXRzIGluIGNvbm5lY3Rpb25zLml0ZW1zKCk6CiAgICBpZiBzb3VyY2Ugbm90IGluIG5hbWVzOgogICAgICAgIGJyb2tlbi5hcHBlbmQoc291cmNlKQogICAgY2hlY2tfcmVmcyhvdXRwdXRzKQppZiBicm9rZW46CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJCcm9rZW4gY29ubmVjdGlvbiByZWZzOiAiICsgIiwgIi5qb2luKHNvcnRlZChzZXQoYnJva2VuKSkpKQoKd29ya2Zsb3dfcGF0aC53cml0ZV90ZXh0KAogICAganNvbi5kdW1wcyhkYXRhLCBlbnN1cmVfYXNjaWk9RmFsc2UsIHNlcGFyYXRvcnM9KCIsIiwgIjoiKSksCiAgICBlbmNvZGluZz0idXRmLTgiCikKCmVudl9wYXRoID0gcGF0aGxpYi5QYXRoKCIuZW52LmV4YW1wbGUiKQppZiBlbnZfcGF0aC5leGlzdHMoKToKICAgIGxpbmVzID0gZW52X3BhdGgucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIpLnNwbGl0bGluZXMoKQogICAgbGluZXMgPSBbCiAgICAgICAgbG4gZm9yIGxuIGluIGxpbmVzCiAgICAgICAgaWYgIkFMTE9XX0RFU1RSVUNUSVZFX1JFU0VUIiBub3QgaW4gbG4KICAgICAgICBhbmQgIk44Tl9CTE9DS19FTlZfQUNDRVNTX0lOX05PREUiIG5vdCBpbiBsbgogICAgXQogICAgZW52X3BhdGgud3JpdGVfdGV4dCgiXG4iLmpvaW4obGluZXMpLnJzdHJpcCgpICsgIlxuIiwgZW5jb2Rpbmc9InV0Zi04IikKCm1kX3BhdGhzID0gW3BhdGhsaWIuUGF0aCgiUkVBRE1FLm1kIiksIHBhdGhsaWIuUGF0aCgiRE9DVU1FTlRBVElPTi5tZCIpXQptZF9wYXRocyArPSBsaXN0KHBhdGhsaWIuUGF0aCgiZG9jcyIpLmdsb2IoIioubWQiKSkKZm9yIG1kIGluIG1kX3BhdGhzOgogICAgaWYgbm90IG1kLmV4aXN0cygpOgogICAgICAgIGNvbnRpbnVlCiAgICB0ZXh0ID0gbWQucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIpCiAgICBmaWx0ZXJlZCA9ICJcbiIuam9pbigKICAgICAgICBsaW5lIGZvciBsaW5lIGluIHRleHQuc3BsaXRsaW5lcygpCiAgICAgICAgaWYgIkFMTE9XX0RFU1RSVUNUSVZFX1JFU0VUIiBub3QgaW4gbGluZQogICAgICAgIGFuZCAiTjhOX0JMT0NLX0VOVl9BQ0NFU1NfSU5fTk9ERSIgbm90IGluIGxpbmUKICAgICkucnN0cmlwKCkgKyAiXG4iCiAgICBtZC53cml0ZV90ZXh0KGZpbHRlcmVkLCBlbmNvZGluZz0idXRmLTgiKQoKZXhlY3V0aW9uX2RvYyA9IHBhdGhsaWIuUGF0aCgiZG9jcy9XT1JLRkxPV19FWEVDVVRJT04ubWQiKQpzZWN0aW9uID0gIiIiCgojIyBSZXNldCBzYWZldHkg4oCUIFY0LjEgKGVudi1mcmVlKQoKU3RlcCAwMSBpcyBkZXN0cnVjdGl2ZSBhbmQgaXMgaW50ZW5kZWQgb25seSBmb3IgYSBmcmVzaC9kZXYgcmVzZXQgb3IgYW4gaW50ZW50aW9uYWwgZnVsbCBhcHBsaWNhdGlvbi1kYXRhIHJlc2V0LiBJdCBubyBsb25nZXIgcmVxdWlyZXMgYCRlbnZgIG9yIGFueSBlbnZpcm9ubWVudC1hY2Nlc3Mgc2V0dGluZyBpbiBuOG4uCgoxLiBPcGVuICoqYDAxLjAwIC0gRW50ZXIgUmVzZXQgQ29uZmlybWF0aW9uIChFRElUIEJFRk9SRSBSRVNFVClgKiouCjIuIEl0cyBkZWZhdWx0IGByZXNldF9jb25maXJtYXRpb25gIHZhbHVlIGlzIGludGVudGlvbmFsbHkgaW52YWxpZDogYENIQU5HRV9NRV9fVFlQRV9SRVNFVF9BSV9BR0VOVF9EQVRBQkFTRWAuCjMuIE9ubHkgd2hlbiB5b3UgcmVhbGx5IHdhbnQgdGhlIHJlc2V0LCB0ZW1wb3JhcmlseSBjaGFuZ2UgaXQgdG8gZXhhY3RseTogYFJFU0VUX0FJX0FHRU5UX0RBVEFCQVNFYC4KNC4gRXhlY3V0ZSAqKmAwMSAtIFJFU0VUIC0gRW50aXJlIEFJIEFnZW50IERhdGFiYXNlIChERVYgT05MWSlgKiogc28gdGhlIGNvbmZpcm1hdGlvbiB2YWx1ZSBmbG93cyBpbnRvIHRoZSBzYWZldHkgZ3VhcmQuCjUuIGAwMS4wMSAtIFJlc2V0IFNhZmV0eSBHdWFyZGAgdmFsaWRhdGVzIHRoZSB2YWx1ZSBiZWZvcmUgYW55IGRlc3RydWN0aXZlIFNRTCBjYW4gcnVuLgo2LiBBZnRlciByZXNldCBzdWNjZWVkcywgY2hhbmdlIHRoZSBjb25maXJtYXRpb24gZmllbGQgYmFjayB0byB0aGUgcGxhY2Vob2xkZXIgYW5kIHNhdmUgdGhlIHdvcmtmbG93LgoKRG8gKipub3QqKiBleGVjdXRlIHRoZSBzYWZldHkgZ3VhcmQgYnkgaXRzZWxmLiBJZiBpdCByZWNlaXZlcyBubyBjb25maXJtYXRpb24gaW5wdXQsIGl0IGludGVudGlvbmFsbHkgc3RvcHMgd2l0aCBhIHNhZmUgZXJyb3IgYW5kIHRoZSBkYXRhYmFzZSBpcyBub3QgcmVzZXQuCiIiIgppZiBleGVjdXRpb25fZG9jLmV4aXN0cygpOgogICAgdGV4dCA9IGV4ZWN1dGlvbl9kb2MucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIpCiAgICBpZiAiIyMgUmVzZXQgc2FmZXR5IOKAlCBWNC4xIChlbnYtZnJlZSkiIG5vdCBpbiB0ZXh0OgogICAgICAgIGV4ZWN1dGlvbl9kb2Mud3JpdGVfdGV4dCh0ZXh0LnJzdHJpcCgpICsgc2VjdGlvbiArICJcbiIsIGVuY29kaW5nPSJ1dGYtOCIpCgphc3NlcnQgIkFMTE9XX0RFU1RSVUNUSVZFX1JFU0VUIiBub3QgaW4gd29ya2Zsb3dfcGF0aC5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04IikKcHJpbnQoIlBhdGNoZWQgd29ya2Zsb3cgbm9kZXM6IiwgbGVuKG5vZGVzKSkKcHJpbnQoIlJlc2V0IGd1YXJkIGVudi1mcmVlOiIsICIkZW52IiBub3QgaW4gZ3VhcmRbInBhcmFtZXRlcnMiXVsianNDb2RlIl0pCnByaW50KCJDb25maXJtYXRpb24gbm9kZToiLCBjb25maXJtYXRpb25fbmFtZSkK' | base64 --decode > /tmp/patch_reset_v41.py
+          python /tmp/patch_reset_v41.py
+          ! grep -R --line-number --exclude-dir=.git --exclude=patch-reset-guard-v41.yml -E 'ALLOW_DESTRUCTIVE_RESET|N8N_BLOCK_ENV_ACCESS_IN_NODE' README.md DOCUMENTATION.md docs .env.example workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json
 
-          workflow_path = pathlib.Path('workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json')
-          data = json.loads(workflow_path.read_text(encoding='utf-8'))
-          nodes = data.get('nodes', [])
-          connections = data.setdefault('connections', {})
-
-          guard_name = '01.01 - Reset Safety Guard'
-          confirmation_name = '01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)'
-          trigger_name = '01 - RESET - Entire AI Agent Database (DEV ONLY)'
-
-          by_name = {n.get('name'): n for n in nodes}
-          if guard_name not in by_name:
-              raise SystemExit(f'Missing required node: {guard_name}')
-          guard = by_name[guard_name]
-
-          # Make the destructive guard independent of n8n environment-variable access.
-          guard.setdefault('parameters', {})['jsCode'] = r'''const allItems = $input.all();
-const input = allItems.length > 0 ? (allItems[0].json || {}) : {};
-const confirmation = String(input.reset_confirmation || '').trim();
-const expected = 'RESET_AI_AGENT_DATABASE';
-
-if (confirmation !== expected) {
-  throw new Error(
-    'Reset blocked safely. Open node "01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)", ' +
-    'set reset_confirmation exactly to "' + expected + '", then execute Step 01 from the reset trigger. ' +
-    'After the reset finishes, change the field back to the placeholder value. Current value: ' +
-    (confirmation || '(empty)')
-  );
-}
-
-return allItems;'''
-
-          # Add a deliberately-invalid confirmation input. A beginner must consciously edit it.
-          if confirmation_name not in by_name:
-              gx, gy = guard.get('position', [-2200, -900])
-              confirmation_node = {
-                  'parameters': {
-                      'assignments': {
-                          'assignments': [
-                              {
-                                  'id': str(uuid.uuid4()),
-                                  'name': 'reset_confirmation',
-                                  'value': 'CHANGE_ME__TYPE_RESET_AI_AGENT_DATABASE',
-                                  'type': 'string'
-                              }
-                          ]
-                      },
-                      'options': {}
-                  },
-                  'type': 'n8n-nodes-base.set',
-                  'typeVersion': 3.4,
-                  'position': [gx - 260, gy],
-                  'id': str(uuid.uuid4()),
-                  'name': confirmation_name
-              }
-              nodes.append(confirmation_node)
-
-              # Route every existing incoming edge to the guard through the confirmation node.
-              def retarget(value):
-                  if isinstance(value, dict):
-                      if value.get('node') == guard_name:
-                          value['node'] = confirmation_name
-                      for v in value.values():
-                          retarget(v)
-                  elif isinstance(value, list):
-                      for v in value:
-                          retarget(v)
-
-              retarget(connections)
-              connections[confirmation_name] = {
-                  'main': [[{'node': guard_name, 'type': 'main', 'index': 0}]]
-              }
-          else:
-              # Ensure an existing confirmation node still points to the guard.
-              connections[confirmation_name] = {
-                  'main': [[{'node': guard_name, 'type': 'main', 'index': 0}]]
-              }
-
-          # Make the top sticky note explain the reset UX.
-          start_note = next((n for n in nodes if n.get('name') == 'README - Start Here'), None)
-          reset_note = (
-              '\n\n**Reset safety (V4.1)**\n'
-              '- Reset no longer reads `$env`.\n'
-              '- Open `01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)`.\n'
-              '- Temporarily set `reset_confirmation` to `RESET_AI_AGENT_DATABASE`.\n'
-              '- Run Step 01 from `01 - RESET - Entire AI Agent Database (DEV ONLY)`.\n'
-              '- After reset, restore the placeholder value.\n'
-              '- Executing `01.01 - Reset Safety Guard` directly without input is expected to stop safely.\n'
-          )
-          if start_note is not None:
-              content = start_note.setdefault('parameters', {}).get('content', '')
-              if '**Reset safety (V4.1)**' not in content:
-                  start_note['parameters']['content'] = content + reset_note
-
-          # Validate important reset wiring and all connection references.
-          names = {n.get('name') for n in nodes}
-          if confirmation_name not in names:
-              raise SystemExit('Confirmation node was not created')
-          if '$env' in guard.get('parameters', {}).get('jsCode', ''):
-              raise SystemExit('Reset guard still contains $env')
-          if confirmation_name not in connections:
-              raise SystemExit('Confirmation node has no outgoing connection')
-
-          broken = []
-          def check_refs(value):
-              if isinstance(value, dict):
-                  if 'node' in value and value['node'] not in names:
-                      broken.append(value['node'])
-                  for v in value.values():
-                      check_refs(v)
-              elif isinstance(value, list):
-                  for v in value:
-                      check_refs(v)
-          for source, outputs in connections.items():
-              if source not in names:
-                  broken.append(source)
-              check_refs(outputs)
-          if broken:
-              raise SystemExit('Broken connection refs: ' + ', '.join(sorted(set(broken))))
-
-          # Save compact import-ready JSON.
-          workflow_path.write_text(json.dumps(data, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
-
-          # Remove obsolete env-based reset flags from env example.
-          env_path = pathlib.Path('.env.example')
-          if env_path.exists():
-              lines = env_path.read_text(encoding='utf-8').splitlines()
-              lines = [ln for ln in lines if 'ALLOW_DESTRUCTIVE_RESET' not in ln and 'N8N_BLOCK_ENV_ACCESS_IN_NODE' not in ln]
-              env_path.write_text('\n'.join(lines).rstrip() + '\n', encoding='utf-8')
-
-          # Remove old env-reset instruction lines from Markdown and add definitive instructions.
-          for md in [pathlib.Path('README.md'), pathlib.Path('DOCUMENTATION.md'), *pathlib.Path('docs').glob('*.md')]:
-              if not md.exists():
-                  continue
-              text = md.read_text(encoding='utf-8')
-              filtered = '\n'.join(
-                  line for line in text.splitlines()
-                  if 'ALLOW_DESTRUCTIVE_RESET' not in line and 'N8N_BLOCK_ENV_ACCESS_IN_NODE' not in line
-              ).rstrip() + '\n'
-              md.write_text(filtered, encoding='utf-8')
-
-          execution_doc = pathlib.Path('docs/WORKFLOW_EXECUTION.md')
-          section = r'''
-
-## Reset safety — V4.1 (env-free)
-
-Step 01 is destructive and is intended only for a fresh/dev reset or an intentional full application-data reset. It no longer requires `$env` or any environment-access setting in n8n.
-
-1. Open **`01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)`**.
-2. Its default `reset_confirmation` value is intentionally invalid: `CHANGE_ME__TYPE_RESET_AI_AGENT_DATABASE`.
-3. Only when you really want the reset, temporarily change it to exactly: `RESET_AI_AGENT_DATABASE`.
-4. Execute **`01 - RESET - Entire AI Agent Database (DEV ONLY)`** so the confirmation value flows into the safety guard.
-5. `01.01 - Reset Safety Guard` validates the value before any destructive SQL can run.
-6. After reset succeeds, change the confirmation field back to the placeholder and save the workflow.
-
-Do **not** execute the safety guard by itself. If it receives no confirmation input, it intentionally stops with a safe error and the database is not reset.
-'''
-          if execution_doc.exists():
-              text = execution_doc.read_text(encoding='utf-8')
-              if '## Reset safety — V4.1 (env-free)' not in text:
-                  execution_doc.write_text(text.rstrip() + section + '\n', encoding='utf-8')
-
-          print('Patched workflow nodes:', len(nodes))
-          print('Reset guard is env-free:', '$env' not in guard['parameters']['jsCode'])
-          print('Confirmation node:', confirmation_name)
-          print('Trigger present:', trigger_name in names)
-          PY
-
-          # Ensure obsolete reset-env flags are gone from the user-facing project files.
-          ! grep -R --line-number --exclude-dir=.git --exclude='patch-reset-guard-v41.yml' \
-            -E 'ALLOW_DESTRUCTIVE_RESET|N8N_BLOCK_ENV_ACCESS_IN_NODE' \
-            README.md DOCUMENTATION.md docs .env.example workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json
-
-      - name: Commit V4.1 reset safety patch and remove temporary action
+      - name: Commit patch and clean temporary workflow
         shell: bash
         run: |
           set -euo pipefail
