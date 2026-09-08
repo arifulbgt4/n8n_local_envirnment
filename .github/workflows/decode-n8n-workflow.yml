@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - 'workflow_chunks/part-10.b64part'
+      - '.github/workflows/decode-n8n-workflow.yml'
   workflow_dispatch:
 
 permissions:
@@ -47,7 +48,7 @@ jobs:
           names = {n.get('name') for n in nodes}
           required = {
               '01 - RESET - Entire AI Agent Database (DEV ONLY)',
-              '02 - INSTALL - Bootstrap System',
+              '02 - INSTALL - Bootstrap System (ONLY input: Control Spreadsheet ID)',
               '03 - SYNC - Control Spreadsheet -> PostgreSQL',
               '04 - INIT - Account Operations Spreadsheets',
               '05 - SYNC - Products + FAQ Catalog',
