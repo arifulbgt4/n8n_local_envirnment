@@ -131,6 +131,14 @@ async function sendAttachmentId({ accessToken, recipientId, attachmentId, graphV
   });
 }
 
+async function sendUrlAttachment({ accessToken, recipientId, sourceUrl, graphVersion }) {
+  return graphJson(`https://graph.facebook.com/${graphVersion}/me/messages`, accessToken, {
+    recipient: { id: String(recipientId) },
+    messaging_type: 'RESPONSE',
+    message: { attachment: { type: 'image', payload: { url: String(sourceUrl), is_reusable: true } } },
+  });
+}
+
 async function uploadReusableAttachment({ accessToken, localPath, mimeType, graphVersion }) {
   const bytes = await fs.readFile(localPath);
   const form = new FormData();
@@ -177,22 +185,49 @@ async function handleFacebookSend(body) {
     }
   }
 
-  if (!sourceUrl) throw new Error('sourceUrl is required when no reusable attachmentId is available');
-  const cached = await cacheImage(sourceUrl, body.cacheKey);
-  attachmentId = await uploadReusableAttachment({
-    accessToken,
-    localPath: cached.localPath,
-    mimeType: cached.mimeType,
-    graphVersion,
-  });
-  const sent = await sendAttachmentId({ accessToken, recipientId, attachmentId, graphVersion });
-  return {
-    ok: true,
-    messageId: String(sent.message_id || ''),
-    attachmentId,
-    reusedAttachment: false,
-    ...cached,
-  };
+  let cached = null;
+  const suppliedLocalPath = String(body.localPath || '');
+  if (suppliedLocalPath && await exists(suppliedLocalPath)) {
+    const stat = await fs.stat(suppliedLocalPath);
+    cached = {
+      cacheKey: String(body.cacheKey || safeKey(suppliedLocalPath)),
+      localPath: suppliedLocalPath,
+      mimeType: String(body.mimeType || 'image/jpeg'),
+      fileSize: stat.size,
+      reusedLocalFile: true,
+    };
+  } else {
+    if (!sourceUrl) throw new Error('sourceUrl is required when no reusable attachmentId/local file is available');
+    cached = await cacheImage(sourceUrl, body.cacheKey);
+  }
+
+  try {
+    attachmentId = await uploadReusableAttachment({
+      accessToken,
+      localPath: cached.localPath,
+      mimeType: cached.mimeType,
+      graphVersion,
+    });
+    const sent = await sendAttachmentId({ accessToken, recipientId, attachmentId, graphVersion });
+    return {
+      ok: true,
+      messageId: String(sent.message_id || ''),
+      attachmentId,
+      reusedAttachment: false,
+      ...cached,
+    };
+  } catch (uploadError) {
+    if (!sourceUrl) throw uploadError;
+    const sent = await sendUrlAttachment({ accessToken, recipientId, sourceUrl, graphVersion });
+    return {
+      ok: true,
+      messageId: String(sent.message_id || ''),
+      attachmentId: '',
+      reusedAttachment: false,
+      fallbackUrlAttachment: true,
+      ...cached,
+    };
+  }
 }
 
 const server = http.createServer(async (req, res) => {
