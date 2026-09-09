@@ -12,7 +12,7 @@
  */
 
 const PRODUCT_SHEET = 'Products';
-const SCRIPT_VERSION = '4.2-products-v4-safe-recovery';
+const SCRIPT_VERSION = '4.2-products-v5-grid-borders';
 const BACKUP_RECOVERY_KEY = 'PRODUCT_BACKUP_RECOVERY_DONE_V4';
 const IMAGE_REGISTRY_KEY = 'PRODUCT_IMAGE_FILE_REGISTRY_V3';
 
@@ -538,6 +538,14 @@ function formatProductsSheet_(sh, visibleHeaders, rowCount) {
     .setVerticalAlignment('middle')
     .setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
 
+  // Permanent light grid borders for merchant-facing rows and columns.
+  range.setBorder(
+    true, true, true, true, true, true,
+    '#dadce0',
+    SpreadsheetApp.BorderStyle.SOLID
+  );
+  try { sh.setHiddenGridlines(false); } catch (_) {}
+
   const header = sh.getRange(1, 1, 1, visibleCount);
   header
     .setBackground('#ffffff')
@@ -546,7 +554,8 @@ function formatProductsSheet_(sh, visibleHeaders, rowCount) {
     .setFontSize(10)
     .setHorizontalAlignment('center')
     .setVerticalAlignment('middle')
-    .setBorder(false, false, true, false, false, false, '#9aa0a6', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+    .setBorder(true, true, true, true, true, true, '#dadce0', SpreadsheetApp.BorderStyle.SOLID)
+    .setBorder(null, null, true, null, null, null, '#9aa0a6', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
 
   try { sh.setFrozenRows(1); sh.setFrozenColumns(2); } catch (_) {}
   sh.setRowHeight(1, 32);
