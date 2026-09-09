@@ -534,6 +534,12 @@ function resolveImageSlotFromSnapshot_(sh, sheetRow, sourceIndices, rowValues, r
   }
 
   if (url) {
+    // After the first normalization a direct image becomes an IMAGE() formula
+    // pointing at the durable Drive URL. Keep its managed file metadata instead
+    // of trashing that same file on the next scheduled sync.
+    if (oldId && oldResolved && url === oldResolved) {
+      return { url, fileId: oldId, hash: oldHash, managed: true };
+    }
     if (oldId) trashFile_(oldId);
     return { url, fileId: '', hash: '', managed: false };
   }
