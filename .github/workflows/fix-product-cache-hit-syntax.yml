@@ -1,0 +1,147 @@
+name: Fix Product Cache HIT syntax
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/fix-product-cache-hit-syntax.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch Product Cache HIT code safely
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('workflows/modular/05_META_MESSAGING_V4_2.json')
+          data = json.loads(path.read_text(encoding='utf-8'))
+
+          cache_hit = r'''const q = String($json.base?.normalizedQuestion || $json.base?.message || '').toLowerCase();
+const isListRequest = /all products?|product list|products list|catalog|show products?|list products?|ki\s*ki\s*(?:products?|product|shari|saree|sari)|kon\s*kon\s*(?:shari|saree|sari|products?)|(?:shari|saree|sari)\s*(?:ki\s*ki|ache|acy|ase)|ki\s*(?:shari|saree|sari)\s*(?:ache|acy|ase)|সব\s*(?:প্রোডাক্ট|পণ্য)|প্রোডাক্ট\s*লিস্ট|পণ্যের\s*লিস্ট|কি\s*কি\s*(?:প্রোডাক্ট|পণ্য|শাড়ি|শাড়ি)|কী\s*কী\s*(?:প্রোডাক্ট|পণ্য|শাড়ি|শাড়ি)|কোন\s*কোন\s*(?:শাড়ি|শাড়ি|প্রোডাক্ট|পণ্য)|সবগুলো\s*(?:প্রোডাক্ট|পণ্য)/i.test(q);
+const isAlternativeRequest = /আর\s*(?:কোন|কোনো|কি|কী)|অন্য|আরেক|আরও|বাকি|other|another|else|different|more/i.test(q);
+if (isListRequest || isAlternativeRequest || !$json.cache_reply) return [];
+
+const base = $json.base || {};
+const arr = Array.isArray($json.products) ? $json.products : [];
+const selected = arr.find(p => String(p.id) === String($json.top_product_id)) || arr[0] || {};
+let urls = Array.isArray(selected.media_urls) ? selected.media_urls : [];
+if (!urls.length && selected.image_url) urls = [selected.image_url];
+
+const stripMediaLinks = (value) => String(value || '')
+  .replace(/https?:\/\/(?:drive\.google\.com|[^\s/]*googleusercontent\.com)\/[^\s]+/gi, '')
+  .replace(/\n{3,}/g, '\n\n')
+  .trim();
+
+return [{
+  json: {
+    ...base,
+    reply: stripMediaLinks($json.cache_reply),
+    selectedProductId: $json.top_product_id ? String($json.top_product_id) : '',
+    productImageUrl: urls[0] || '',
+    productImageUrls: urls.slice(0, 5),
+    wantsImage: !!base.wantsImage,
+    state: 'BROWSING',
+    contextPatch: { selected_product: { productId: $json.top_product_id || null } },
+    scheduleFollowup: true,
+    cacheId: $json.cache_id
+  }
+}];'''
+
+          parse_answer = r'''const base = $('Product Cache MISS').item.json;
+let raw = String($json.text || $json.output || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+let o;
+try {
+  o = JSON.parse(raw);
+} catch {
+  o = { reply: raw || 'তথ্যটি যাচাই করা যাচ্ছে না।', selectedProductId: '' };
+}
+
+const stripMediaLinks = (value) => String(value || '')
+  .replace(/https?:\/\/(?:drive\.google\.com|[^\s/]*googleusercontent\.com)\/[^\s]+/gi, '')
+  .replace(/\n{3,}/g, '\n\n')
+  .trim();
+
+const q = String(base.normalizedQuestion || base.message || '').toLowerCase();
+const listRequest = !!base.isListRequest || /all products?|product list|products list|catalog|show products?|list products?|ki\s*ki\s*(?:products?|product|shari|saree|sari)|kon\s*kon\s*(?:shari|saree|sari|products?)|(?:shari|saree|sari)\s*(?:ki\s*ki|ache|acy|ase)|কি\s*কি\s*(?:প্রোডাক্ট|পণ্য|শাড়ি|শাড়ি)|কী\s*কী\s*(?:প্রোডাক্ট|পণ্য|শাড়ি|শাড়ি)/i.test(q);
+const alternativeRequest = !!base.isAlternativeRequest || /আর\s*(?:কোন|কোনো|কি|কী)|অন্য|আরেক|আরও|বাকি|other|another|else|different|more/i.test(q);
+const arr = Array.isArray(base.products) ? base.products : [];
+let selected = listRequest ? '' : String(o.selectedProductId || '');
+if (selected && !arr.some(p => String(p.id) === selected)) selected = '';
+if (!selected && !listRequest && arr.length) selected = String(base.topProductId || arr[0].id || '');
+const product = selected ? (arr.find(p => String(p.id) === selected) || {}) : {};
+let urls = Array.isArray(product.media_urls) ? product.media_urls : [];
+if (!urls.length && product.image_url) urls = [product.image_url];
+
+return [{
+  json: {
+    ...base,
+    reply: stripMediaLinks(o.reply || ''),
+    selectedProductId: selected,
+    productImageUrl: listRequest ? '' : (urls[0] || ''),
+    productImageUrls: listRequest ? [] : urls.slice(0, 5),
+    wantsImage: listRequest ? false : !!base.wantsImage,
+    state: 'BROWSING',
+    contextPatch: selected ? { selected_product: { productId: selected } } : {},
+    scheduleFollowup: !!selected && !listRequest,
+    handoff: false,
+    isAlternativeRequest: alternativeRequest
+  }
+}];'''
+
+          found = set()
+          for node in data.get('nodes', []):
+              name = node.get('name')
+              if name == 'Product Cache HIT':
+                  node.setdefault('parameters', {})['jsCode'] = cache_hit
+                  found.add(name)
+              elif name == 'Parse Product Answer':
+                  node.setdefault('parameters', {})['jsCode'] = parse_answer
+                  found.add(name)
+
+          required = {'Product Cache HIT', 'Parse Product Answer'}
+          missing = required - found
+          if missing:
+              raise SystemExit(f'Missing nodes: {sorted(missing)}')
+
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          print('Patched:', ', '.join(sorted(found)))
+          PY
+
+      - name: Validate patched JavaScript syntax
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const wf = JSON.parse(fs.readFileSync('workflows/modular/05_META_MESSAGING_V4_2.json', 'utf8'));
+          for (const name of ['Product Cache HIT', 'Parse Product Answer']) {
+            const node = wf.nodes.find(n => n.name === name);
+            if (!node) throw new Error(`Missing ${name}`);
+            try {
+              new Function(node.parameters.jsCode);
+            } catch (e) {
+              console.error(`${name} syntax error:`, e.message);
+              process.exit(1);
+            }
+            console.log(`${name}: syntax OK`);
+          }
+          NODE
+
+      - name: Commit patch and remove temporary workflow
+        shell: bash
+        run: |
+          rm -f .github/workflows/fix-product-cache-hit-syntax.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add workflows/modular/05_META_MESSAGING_V4_2.json .github/workflows/fix-product-cache-hit-syntax.yml
+          git commit -m 'Fix Product Cache HIT JavaScript syntax'
+          git push origin master
