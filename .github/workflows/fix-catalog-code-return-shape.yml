@@ -1,0 +1,63 @@
+name: Fix catalog code return shape
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/fix-catalog-code-return-shape.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - name: Patch n8n Code node return shape
+        run: |
+          python - <<'PY'
+          import json, pathlib, re
+
+          path = pathlib.Path('workflows/modular/02_CATALOG_SYNC_V4_2.json')
+          data = json.loads(path.read_text())
+
+          targets = {'Normalize Product Row', 'Normalize FAQ Row'}
+          changed = []
+          for node in data.get('nodes', []):
+              if node.get('name') not in targets:
+                  continue
+              params = node.setdefault('parameters', {})
+              params['mode'] = 'runOnceForEachItem'
+              code = params.get('jsCode', '')
+
+              # In Run Once for Each Item, n8n expects ONE item object, not an array.
+              # Keep blank-row guards unchanged for now; normal populated rows must return {json:{...}}.
+              new_code, count = re.subn(
+                  r'return\s+\[\{json:\{(.*)\}\}\];\s*$',
+                  r'return {json:{\1}};',
+                  code,
+                  count=1,
+                  flags=re.S,
+              )
+              if count != 1:
+                  raise SystemExit(f'Expected one final array return in {node.get("name")}, found {count}')
+              params['jsCode'] = new_code
+              changed.append(node.get('name'))
+
+          if changed != ['Normalize Product Row', 'Normalize FAQ Row']:
+              raise SystemExit(f'Unexpected patched nodes: {changed}')
+
+          path.write_text(json.dumps(data, ensure_ascii=False, separators=(',', ':')) + '\n')
+          PY
+
+          rm .github/workflows/fix-catalog-code-return-shape.yml
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add workflows/modular/02_CATALOG_SYNC_V4_2.json .github/workflows/fix-catalog-code-return-shape.yml
+          git commit -m 'Fix per-item catalog normalizer return shape'
+          git push origin master
