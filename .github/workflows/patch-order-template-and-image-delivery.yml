@@ -1,0 +1,50 @@
+name: Patch order template and image delivery
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/patch-order-template-and-image-delivery.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply workflow patch
+        run: python3 scripts/patch_order_template_and_image_delivery.py
+      - name: Validate workflow JSON
+        run: python3 -m json.tool workflows/modular/05_META_MESSAGING_V4_2.json >/dev/null
+      - name: Validate all Code node JavaScript
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, subprocess, tempfile
+          data=json.load(open('workflows/modular/05_META_MESSAGING_V4_2.json',encoding='utf-8'))
+          for i,n in enumerate(data.get('nodes',[])):
+              if n.get('type')!='n8n-nodes-base.code':
+                  continue
+              code=n.get('parameters',{}).get('jsCode','')
+              p=pathlib.Path('/tmp')/f'n8n-code-{i}.js'
+              p.write_text(code,encoding='utf-8')
+              r=subprocess.run(['node','--check',str(p)],capture_output=True,text=True)
+              if r.returncode:
+                  print('Node:',n.get('name'))
+                  print(r.stdout,r.stderr)
+                  raise SystemExit(r.returncode)
+          PY
+      - name: Validate media cache service
+        run: node --check services/media-cache/server.mjs
+      - name: Commit patch and cleanup
+        run: |
+          rm -f .github/workflows/patch-order-template-and-image-delivery.yml
+          rm -f scripts/patch_order_template_and_image_delivery.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Fix order collection template and reliable product image delivery'
+          git push origin master
