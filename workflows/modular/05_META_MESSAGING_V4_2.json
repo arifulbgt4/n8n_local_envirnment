@@ -1132,8 +1132,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        5200,
-        40
+        5440,
+        120
       ],
       "id": "caa1b818-baf6-426c-8bb5-49cc4541c414",
       "name": "Send Verified Product Image",
@@ -1910,6 +1910,104 @@
       ],
       "id": "651d3ece-821b-4f4e-8676-e3039d0463f5",
       "name": "Store Product Image Bot Message ID"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().filter(i => ['facebook','instagram'].includes(String(i.json.platform||'').toLowerCase()));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5200,
+        -80
+      ],
+      "id": "cc1e7f82-3f79-4f88-8d76-c1311488f2d0",
+      "name": "Route Meta Product Image"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().filter(i => String(i.json.platform||'').toLowerCase()==='whatsapp');"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5200,
+        120
+      ],
+      "id": "18d5054f-acde-4f79-9ea7-77f0863050db",
+      "name": "Route WhatsApp Product Image"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.productImageUrl }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5440,
+        -80
+      ],
+      "id": "857a3ed0-9333-4a37-b4d2-b2da2886d41c",
+      "name": "Download Product Image Binary"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Route Meta Product Image').item.json.replyUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $('Route Meta Product Image').item.json.accessToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formData",
+              "name": "recipient",
+              "value": "={{ JSON.stringify({id:$('Route Meta Product Image').item.json.senderId}) }}"
+            },
+            {
+              "parameterType": "formData",
+              "name": "messaging_type",
+              "value": "RESPONSE"
+            },
+            {
+              "parameterType": "formData",
+              "name": "message",
+              "value": "={{ JSON.stringify({attachment:{type:'image',payload:{is_reusable:true}}}) }}"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "filedata",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5680,
+        -80
+      ],
+      "id": "ba115cf5-3b77-4aec-a059-19a57977f775",
+      "name": "Send Meta Product Image Binary",
+      "continueOnFail": true
     }
   ],
   "pinData": {},
@@ -2671,7 +2769,12 @@
       "main": [
         [
           {
-            "node": "Send Verified Product Image",
+            "node": "Route Meta Product Image",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Route WhatsApp Product Image",
             "type": "main",
             "index": 0
           }
@@ -2929,6 +3032,50 @@
         [
           {
             "node": "Normalize + Event Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Meta Product Image": {
+      "main": [
+        [
+          {
+            "node": "Download Product Image Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Product Image Binary": {
+      "main": [
+        [
+          {
+            "node": "Send Meta Product Image Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Meta Product Image Binary": {
+      "main": [
+        [
+          {
+            "node": "Store Product Image Bot Message ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route WhatsApp Product Image": {
+      "main": [
+        [
+          {
+            "node": "Send Verified Product Image",
             "type": "main",
             "index": 0
           }
