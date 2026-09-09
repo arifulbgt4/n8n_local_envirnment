@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/patch-merchant-voice-multi-image.yml'
+      - 'scripts/patch_merchant_voice_multi_image.py'
 
 permissions:
   contents: write
@@ -12,145 +13,13 @@ jobs:
   patch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           ref: master
 
-      - name: Patch Meta messaging workflow
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json, re
-          from pathlib import Path
-
-          path = Path('workflows/modular/05_META_MESSAGING_V4_2.json')
-          data = json.loads(path.read_text())
-
-          def node(name):
-              for n in data.get('nodes', []):
-                  if n.get('name') == name:
-                      return n
-              raise SystemExit(f'Missing node: {name}')
-
-          # 1) Merchant voice + color-aware product-answering rules.
-          pa = node('Product Answer AI')
-          suffix = '''\n\nBUSINESS VOICE RULES:\n- You are speaking AS the merchant/business to its customer. When referring to the business/catalog, use first-person plural: “আমাদের কাছে”, “আমাদের পণ্য”, “আমরা”.\n- NEVER say “আপনাদের কাছে” when you mean the merchant's own stock/catalog. “আপনি/আপনার” may only address the customer.\n- Example: say “আমাদের কাছে বর্তমানে এই শাড়িগুলো আছে:” — never “আপনাদের কাছে বর্তমানে…”.\n\nIMAGE + COLOR RULES:\n- If the customer asks for a specific product color and a candidate has an explicit matching `color`, select that exact candidate/variant. Never guess color from an image.\n- If no candidate has a verified matching color, say that color is not verified and ask which available color/product they mean; do not invent a color.\n- If the customer asks for pictures/photos/pics of a product, select the verified matching product so its product media can be sent separately as native Meta image attachments.\n- If the customer asks for all pictures / all photos / সব ছবি / সবগুলো ছবি / ছবিগুলো / পিকগুলো, do not put image URLs in the text reply; acknowledge briefly and let the media-send branch send every available verified image.\n'''
-
-          def append_rule(obj):
-              changed = False
-              if isinstance(obj, dict):
-                  for k, v in list(obj.items()):
-                      if isinstance(v, str) and ('PRODUCT LIST RULES:' in v or 'Candidates:' in v) and 'BUSINESS VOICE RULES:' not in v:
-                          obj[k] = v + suffix
-                          changed = True
-                      elif isinstance(v, (dict, list)):
-                          changed = append_rule(v) or changed
-              elif isinstance(obj, list):
-                  for v in obj:
-                      if isinstance(v, (dict, list)):
-                          changed = append_rule(v) or changed
-              return changed
-
-          if not append_rule(pa.get('parameters', {})):
-              raise SystemExit('Could not locate Product Answer AI prompt string')
-
-          # 2) Make cached product replies obey merchant voice too.
-          hit = node('Product Cache HIT')
-          code = hit.get('parameters', {}).get('jsCode', '')
-          merchant_fn = "const merchantVoice=(value)=>String(value||'').replace(/আপনাদের কাছে/g,'আমাদের কাছে').replace(/আপনাদের পণ্য/g,'আমাদের পণ্য').replace(/আপনাদের স্টকে/g,'আমাদের স্টকে');\n"
-          if 'const merchantVoice=' not in code:
-              code = merchant_fn + code
-          if 'reply: stripMediaLinks($json.cache_reply)' in code:
-              code = code.replace('reply: stripMediaLinks($json.cache_reply)', 'reply: merchantVoice(stripMediaLinks($json.cache_reply))')
-          elif 'merchantVoice(stripMediaLinks($json.cache_reply))' not in code:
-              raise SystemExit('Unexpected Product Cache HIT reply expression')
-          hit['parameters']['jsCode'] = code
-
-          # 3) Normalize AI product replies to merchant voice as a final product-branch guard.
-          parse = node('Parse Product Answer')
-          pcode = parse.get('parameters', {}).get('jsCode', '')
-          if 'const merchantVoice=' not in pcode:
-              pcode = merchant_fn + pcode
-          # Wrap common reply expressions without touching non-product data.
-          patterns = [
-              (r'reply:\s*stripMediaLinks\(String\(o\.reply\s*\|\|\s*[\'\"]{2}\)\)', "reply: merchantVoice(stripMediaLinks(String(o.reply || '')))"),
-              (r'reply:\s*stripMediaLinks\(o\.reply\s*\|\|\s*[\'\"]{2}\)', "reply: merchantVoice(stripMediaLinks(o.reply || ''))"),
-              (r'reply:\s*String\(o\.reply\s*\|\|\s*[\'\"]{2}\)', "reply: merchantVoice(String(o.reply || ''))"),
-          ]
-          changed = False
-          for pat, repl in patterns:
-              pcode2, n = re.subn(pat, repl, pcode, count=1)
-              if n:
-                  pcode = pcode2
-                  changed = True
-                  break
-          # If the parse code already uses merchantVoice, that's fine.
-          if not changed and 'merchantVoice(' not in pcode[pcode.find(merchant_fn)+len(merchant_fn):]:
-              # Fallback: post-process a variable named reply if present.
-              if 'const reply=' in pcode:
-                  pcode = pcode.replace('const reply=', 'const reply=merchantVoice(', 1)
-                  # Can't safely balance arbitrary syntax, so fail instead of corrupting code.
-                  raise SystemExit('Unexpected Parse Product Answer shape; refusing unsafe fallback')
-              raise SystemExit('Could not locate Parse Product Answer reply expression')
-          parse['parameters']['jsCode'] = pcode
-
-          # 4) Fan out product media: one n8n item per image for "all images" requests.
-          img = node('Only Product Image Request')
-          img['parameters']['jsCode'] = r'''const out=[];
-const allRe=/(?:সব\s*গুলো|সবগুলো|সব|সকল|all|every)\s*(?:টা|গুলো)?\s*(?:ছবি|পিক|ফটো|image|images|pic|pics|photo|photos)|(?:ছবিগুলো|পিকগুলো|ফটোগুলো|images|pics|photos)/i;
-const colorMap=[
-  ['লাল','red'],['red','red'],['নীল','blue'],['blue','blue'],['সবুজ','green'],['green','green'],
-  ['কালো','black'],['black','black'],['সাদা','white'],['white','white'],['হলুদ','yellow'],['yellow','yellow'],
-  ['গোলাপি','pink'],['pink','pink'],['মেরুন','maroon'],['maroon','maroon'],['বেগুনি','purple'],['purple','purple'],
-  ['কমলা','orange'],['orange','orange'],['ধূসর','gray'],['grey','gray'],['gray','gray'],['বাদামি','brown'],['brown','brown']
-];
-for(const item of $input.all()){
-  const j=item.json||{};
-  if(!j.wantsImage) continue;
-  const text=String(j.message||'').toLowerCase().replace(/\s+/g,' ').trim();
-  const wantsAll=allRe.test(text);
-  let requestedColor='';
-  for(const [needle,canon] of colorMap){if(text.includes(needle)){requestedColor=canon;break;}}
-  const urls=[...new Set([...(Array.isArray(j.productImageUrls)?j.productImageUrls:[]),j.productImageUrl].filter(Boolean).map(String))];
-  const selected=wantsAll?urls.slice(0,10):urls.slice(0,1);
-  if(!selected.length){
-    out.push({json:{...j,wantsAllImages:wantsAll,requestedColor,productImageUrl:'',mediaIndex:0,mediaCount:0}});
-    continue;
-  }
-  selected.forEach((url,idx)=>out.push({json:{...j,wantsAllImages:wantsAll,requestedColor,productImageUrl:url,productImageUrls:urls,mediaIndex:idx+1,mediaCount:selected.length}}));
-}
-return out;'''
-
-          # 5) Let the existing media cache resolver match the fanned-out URL if its SQL has a single-row media CTE.
-          load = node('Load Product Media Send Cache')
-          q = load.get('parameters', {}).get('query', '')
-          qr = load.get('parameters', {}).get('options', {}).get('queryReplacement', '')
-          # Only patch if not already URL-aware. The existing downstream fields remain untouched.
-          if q and 'requested_media_url' not in q:
-              # Add requested URL to input CTE when a recognizable product-id input is present.
-              q2 = q
-              q2, n1 = re.subn(r'(SELECT\s+\$1::bigint\s+AS\s+product_id)', r"\1, NULLIF($2,'')::text AS requested_media_url", q2, count=1, flags=re.I)
-              if n1:
-                  # Shift original placeholders $2.. upward only in the query is unsafe, so do not force this transformation.
-                  # Revert and rely on fanned productImageUrl unless current query already consumes it.
-                  q2 = q
-              # If query already references productImageUrl via query replacement, preserve as-is.
-              load['parameters']['query'] = q2
-
-          # 6) Expand image URL arrays from 5 to 10 where present; existing sheets may still have 5 columns.
-          for n in data.get('nodes', []):
-              params=n.get('parameters',{})
-              if isinstance(params.get('jsCode'),str):
-                  params['jsCode']=params['jsCode'].replace('urls.slice(0, 5)','urls.slice(0, 10)').replace('urls.slice(0,5)','urls.slice(0,10)')
-
-          # Sanity checks.
-          names={n.get('name') for n in data.get('nodes',[])}
-          for required in ['Product Answer AI','Product Cache HIT','Parse Product Answer','Only Product Image Request','Load Product Media Send Cache']:
-              if required not in names: raise SystemExit(f'Missing required node after patch: {required}')
-          json.dumps(data, ensure_ascii=False)
-          path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
-          print('Patched merchant voice, color-aware rules, and multi-image fan-out')
-          PY
+      - name: Patch workflow JSON
+        run: python3 scripts/patch_merchant_voice_multi_image.py
 
       - name: Validate workflow JSON
         run: |
@@ -159,12 +28,11 @@ return out;'''
           grep -q 'wantsAllImages' workflows/modular/05_META_MESSAGING_V4_2.json
           grep -q 'আমাদের কাছে' workflows/modular/05_META_MESSAGING_V4_2.json
 
-      - name: Commit patch and remove temporary workflow
-        shell: bash
+      - name: Commit patched workflow and cleanup
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          rm .github/workflows/patch-merchant-voice-multi-image.yml
-          git add workflows/modular/05_META_MESSAGING_V4_2.json .github/workflows/patch-merchant-voice-multi-image.yml
+          rm -f .github/workflows/patch-merchant-voice-multi-image.yml scripts/patch_merchant_voice_multi_image.py
+          git add workflows/modular/05_META_MESSAGING_V4_2.json .github/workflows/patch-merchant-voice-multi-image.yml scripts/patch_merchant_voice_multi_image.py
           git commit -m 'Fix merchant voice and multi-image product delivery'
           git push origin master
