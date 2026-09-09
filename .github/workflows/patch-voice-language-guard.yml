@@ -1,8 +1,9 @@
-name: Patch Bengali voice language guard
+name: Apply Bengali voice language guard
 
 on:
   push:
-    branches: [master]
+    branches:
+      - master
     paths:
       - '.github/workflows/patch-voice-language-guard.yml'
 
@@ -13,98 +14,20 @@ jobs:
   patch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           ref: master
           fetch-depth: 0
 
-      - name: Patch Meta Messaging voice handling
+      - name: Apply patch
+        run: python3 .github/scripts/patch_voice_language_guard.py
+
+      - name: Commit patched workflow
+        shell: bash
         run: |
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          path = Path('workflows/modular/05_META_MESSAGING_V4_2.json')
-          data = json.loads(path.read_text())
-          nodes = {n.get('name'): n for n in data.get('nodes', [])}
-
-          required = [
-              'Transcribe Voice',
-              'Attach Voice Transcript',
-              'AI Intent Classifier',
-              'Product Answer AI',
-              'Order Details Extract AI',
-              'General Answer AI',
-          ]
-          missing = [name for name in required if name not in nodes]
-          if missing:
-              raise SystemExit('Missing expected nodes: ' + ', '.join(missing))
-
-          # Bias speech-to-text toward Bengali for Bangla/Banglish customers.
-          transcribe = nodes['Transcribe Voice']['parameters']
-          options = transcribe.setdefault('options', {})
-          options['language'] = 'bn'
-
-          # Preserve voice context so downstream prompts can enforce a sane reply language.
-          nodes['Attach Voice Transcript']['parameters']['jsCode'] = """const base = $('Only Audio Binary').item.json;
-const transcript = $json.text || $json.transcription || $json.content || '';
-const text = String(transcript || '').trim();
-const unclear = !text || text.length < 2;
-return [{json:{
-  ...base,
-  message:text,
-  normalizedQuestion:text.toLowerCase(),
-  inputSource:'voice',
-  preferredReplyLanguage:'bn',
-  voiceTranscriptUnclear:unclear
-}}];"""
-
-          classifier_guard = """
-
-VOICE/LANGUAGE GUARD:
-- If inputSource is `voice`, treat the customer as Bengali/Bangla by default. Bengali voice may contain English product names, brands, numbers, sizes, or Banglish words.
-- Do not treat a suspicious foreign-language transcription as proof that the customer wants that language.
-- If the voice transcript is empty or clearly nonsensical/unclear, classify it as GENERAL rather than guessing a product/order intent.
-Input source: {{ $json.inputSource || 'text' }}
-Preferred reply language: {{ $json.preferredReplyLanguage || '' }}
-Voice transcript unclear: {{ $json.voiceTranscriptUnclear || false }}
-"""
-
-          reply_guard = """
-
-VOICE/LANGUAGE GUARD:
-- If inputSource is `voice`, reply in Bengali (Bangla) by default, even if the transcript appears to be Polish or another unrelated language.
-- Bengali voice may mix English product names, brands, numbers, sizes, and common Banglish words.
-- Never switch to Polish or another unrelated language because of uncertain transcription.
-- If the voice transcript is empty, nonsensical, or unclear, reply exactly in Bengali: \"আপনার ভয়েসটি পরিষ্কার বুঝতে পারিনি। আরেকবার বলবেন?\"
-- For normal text input, continue replying in the customer's actual language/style.
-Input source: {{ $json.inputSource || 'text' }}
-Preferred reply language: {{ $json.preferredReplyLanguage || '' }}
-Voice transcript unclear: {{ $json.voiceTranscriptUnclear || false }}
-"""
-
-          for name in ['AI Intent Classifier']:
-              p = nodes[name].get('parameters', {})
-              if isinstance(p.get('text'), str) and 'VOICE/LANGUAGE GUARD:' not in p['text']:
-                  p['text'] += classifier_guard
-
-          for name in ['Product Answer AI', 'Order Details Extract AI', 'General Answer AI']:
-              p = nodes[name].get('parameters', {})
-              if isinstance(p.get('text'), str) and 'VOICE/LANGUAGE GUARD:' not in p['text']:
-                  p['text'] += reply_guard
-
-          # Ensure the updated workflow remains importable JSON.
-          path.write_text(json.dumps(data, ensure_ascii=False, separators=(',', ':')) + '\n')
-          json.loads(path.read_text())
-
-          print('Patched Bengali voice transcription + downstream language guards.')
-          PY
-
-      - name: Commit patch and remove one-time workflow
-        run: |
-          rm .github/workflows/patch-voice-language-guard.yml
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add workflows/modular/05_META_MESSAGING_V4_2.json .github/workflows/patch-voice-language-guard.yml
-          git commit -m 'Fix Bengali voice transcription and reply language guard'
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix Bengali voice transcription and reply language guard"
           git push origin master
