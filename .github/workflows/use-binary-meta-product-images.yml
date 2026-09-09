@@ -1,0 +1,178 @@
+name: Upload Meta product images as binary
+
+on:
+  push:
+    paths:
+      - '.github/workflows/use-binary-meta-product-images.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Patch Meta image delivery to binary multipart upload
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+
+          path = pathlib.Path('workflows/modular/05_META_MESSAGING_V4_2.json')
+          data = json.loads(path.read_text())
+          nodes = data['nodes']
+          by_name = {n['name']: n for n in nodes}
+
+          def add_node(node):
+              if node['name'] not in by_name:
+                  nodes.append(node)
+                  by_name[node['name']] = node
+
+          add_node({
+            'parameters': {
+              'jsCode': "return $input.all().filter(i => ['facebook','instagram'].includes(String(i.json.platform||'').toLowerCase()));"
+            },
+            'type': 'n8n-nodes-base.code',
+            'typeVersion': 2,
+            'position': [5200, -80],
+            'id': 'cc1e7f82-3f79-4f88-8d76-c1311488f2d0',
+            'name': 'Route Meta Product Image'
+          })
+
+          add_node({
+            'parameters': {
+              'jsCode': "return $input.all().filter(i => String(i.json.platform||'').toLowerCase()==='whatsapp');"
+            },
+            'type': 'n8n-nodes-base.code',
+            'typeVersion': 2,
+            'position': [5200, 120],
+            'id': '18d5054f-acde-4f79-9ea7-77f0863050db',
+            'name': 'Route WhatsApp Product Image'
+          })
+
+          add_node({
+            'parameters': {
+              'url': "={{ $json.productImageUrl }}",
+              'options': {
+                'response': {
+                  'response': {
+                    'responseFormat': 'file',
+                    'outputPropertyName': 'data'
+                  }
+                }
+              }
+            },
+            'type': 'n8n-nodes-base.httpRequest',
+            'typeVersion': 4.2,
+            'position': [5440, -80],
+            'id': '857a3ed0-9333-4a37-b4d2-b2da2886d41c',
+            'name': 'Download Product Image Binary'
+          })
+
+          add_node({
+            'parameters': {
+              'method': 'POST',
+              'url': "={{ $('Route Meta Product Image').item.json.replyUrl }}",
+              'sendHeaders': True,
+              'headerParameters': {
+                'parameters': [
+                  {
+                    'name': 'Authorization',
+                    'value': "={{ 'Bearer ' + $('Route Meta Product Image').item.json.accessToken }}"
+                  }
+                ]
+              },
+              'sendBody': True,
+              'contentType': 'multipart-form-data',
+              'bodyParameters': {
+                'parameters': [
+                  {
+                    'parameterType': 'formData',
+                    'name': 'recipient',
+                    'value': "={{ JSON.stringify({id:$('Route Meta Product Image').item.json.senderId}) }}"
+                  },
+                  {
+                    'parameterType': 'formData',
+                    'name': 'messaging_type',
+                    'value': 'RESPONSE'
+                  },
+                  {
+                    'parameterType': 'formData',
+                    'name': 'message',
+                    'value': "={{ JSON.stringify({attachment:{type:'image',payload:{is_reusable:true}}}) }}"
+                  },
+                  {
+                    'parameterType': 'formBinaryData',
+                    'name': 'filedata',
+                    'inputDataFieldName': 'data'
+                  }
+                ]
+              },
+              'options': {}
+            },
+            'type': 'n8n-nodes-base.httpRequest',
+            'typeVersion': 4.2,
+            'position': [5680, -80],
+            'id': 'ba115cf5-3b77-4aec-a059-19a57977f775',
+            'name': 'Send Meta Product Image Binary',
+            'continueOnFail': True
+          })
+
+          # Existing sender is retained for WhatsApp only.
+          if 'Send Verified Product Image' in by_name:
+              by_name['Send Verified Product Image']['position'] = [5440, 120]
+
+          c = data.setdefault('connections', {})
+          c['Only Product Image Request'] = {
+            'main': [[
+              {'node': 'Route Meta Product Image', 'type': 'main', 'index': 0},
+              {'node': 'Route WhatsApp Product Image', 'type': 'main', 'index': 0}
+            ]]
+          }
+          c['Route Meta Product Image'] = {
+            'main': [[{'node': 'Download Product Image Binary', 'type': 'main', 'index': 0}]]
+          }
+          c['Download Product Image Binary'] = {
+            'main': [[{'node': 'Send Meta Product Image Binary', 'type': 'main', 'index': 0}]]
+          }
+          c['Send Meta Product Image Binary'] = {
+            'main': [[{'node': 'Store Product Image Bot Message ID', 'type': 'main', 'index': 0}]]
+          }
+          c['Route WhatsApp Product Image'] = {
+            'main': [[{'node': 'Send Verified Product Image', 'type': 'main', 'index': 0}]]
+          }
+          c['Send Verified Product Image'] = {
+            'main': [[{'node': 'Store Product Image Bot Message ID', 'type': 'main', 'index': 0}]]
+          }
+
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
+          PY
+
+      - name: Validate workflow JSON and binary upload path
+        run: |
+          python3 -m json.tool workflows/modular/05_META_MESSAGING_V4_2.json >/dev/null
+          python3 - <<'PY'
+          import json
+          d=json.load(open('workflows/modular/05_META_MESSAGING_V4_2.json'))
+          n={x['name']:x for x in d['nodes']}
+          assert n['Send Meta Product Image Binary']['parameters']['contentType']=='multipart-form-data'
+          params=n['Send Meta Product Image Binary']['parameters']['bodyParameters']['parameters']
+          assert any(x.get('parameterType')=='formBinaryData' and x.get('name')=='filedata' and x.get('inputDataFieldName')=='data' for x in params)
+          assert n['Download Product Image Binary']['parameters']['options']['response']['response']['responseFormat']=='file'
+          assert d['connections']['Only Product Image Request']['main'][0][0]['node']=='Route Meta Product Image'
+          print('Binary Meta image upload path validated')
+          PY
+
+      - name: Commit patch and remove temporary workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add workflows/modular/05_META_MESSAGING_V4_2.json
+          git commit -m 'Upload Facebook product images as binary attachments'
+          git rm .github/workflows/use-binary-meta-product-images.yml
+          git commit -m 'Remove temporary binary image patch workflow'
+          git push origin master
