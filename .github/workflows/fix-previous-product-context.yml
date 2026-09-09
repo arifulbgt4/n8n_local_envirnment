@@ -1,0 +1,29 @@
+name: Fix previous product context
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-previous-product-context.yml'
+      - 'scripts/patch_previous_product_context.py'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - name: Apply patch
+        run: python3 scripts/patch_previous_product_context.py
+      - name: Commit patch and cleanup
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/fix-previous-product-context.yml scripts/patch_previous_product_context.py
+          git add workflows/modular/05_META_MESSAGING_V4_2.json .github/workflows/fix-previous-product-context.yml scripts/patch_previous_product_context.py
+          git commit -m "Preserve previous product context for alternative searches"
+          git push origin master
