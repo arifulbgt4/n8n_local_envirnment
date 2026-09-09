@@ -12,15 +12,22 @@
  */
 
 const PRODUCT_SHEET = 'Products';
-const SCRIPT_VERSION = '4.2-products-v3';
+const SCRIPT_VERSION = '4.2-products-v4-safe-recovery';
+const BACKUP_RECOVERY_KEY = 'PRODUCT_BACKUP_RECOVERY_DONE_V4';
 const IMAGE_REGISTRY_KEY = 'PRODUCT_IMAGE_FILE_REGISTRY_V3';
 
 const PRODUCT_COLUMNS = [
+  'Product ID',
   'Product Name',
   'Category',
   'Subcategory',
   'Price',
   'Currency',
+  'Stock Qty',
+  'Stock Status',
+  'Color',
+  'Size',
+  'SKU',
   'Product Description',
   'Product Image',
   'Image 2',
@@ -28,16 +35,10 @@ const PRODUCT_COLUMNS = [
   'Image 4',
   'Image 5',
   'Product URL',
-  'Color',
-  'Size',
-  'SKU',
-  'Stock Status',
-  'Stock Qty',
   'Offer',
   'Discount',
   'Aliases',
   'Active',
-  'Product ID',
   'Product Group ID',
   'Variant ID',
   'Variant Name',
@@ -111,7 +112,8 @@ function normalizeProductSheetLayout() {
 }
 
 function syncProductSheetImages() {
-  const sh = SpreadsheetApp.getActive().getSheetByName(PRODUCT_SHEET);
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(PRODUCT_SHEET);
   if (!sh) return;
 
   const lock = LockService.getDocumentLock();
@@ -119,16 +121,87 @@ function syncProductSheetImages() {
 
   try {
     ensureOneTimeBackup_(sh);
-    const snapshot = snapshotProducts_(sh);
-    const normalizedRows = snapshot.rows.map(r => normalizeProductRow_(r, snapshot.customHeaders));
-    const mergedRows = consolidateDuplicateRows_(normalizedRows, snapshot.customHeaders);
+
+    const current = snapshotProducts_(sh);
+    let source = current;
+    let recovered = false;
+    const props = PropertiesService.getScriptProperties();
+
+    if (props.getProperty(BACKUP_RECOVERY_KEY) !== 'true') {
+      const backup = findOriginalProductsBackup_(ss);
+      if (backup) {
+        const backupSnapshot = snapshotProducts_(backup);
+        const currentImages = countSnapshotImages_(current);
+        const backupImages = countSnapshotImages_(backupSnapshot);
+        const currentRich = snapshotRichness_(current);
+        const backupRich = snapshotRichness_(backupSnapshot);
+
+        if (
+          (currentImages === 0 && backupImages > 0) ||
+          (backupImages >= currentImages + 3 && backupRich > currentRich * 1.30) ||
+          (current.rows.length < backupSnapshot.rows.length * 0.55 && backupImages > currentImages)
+        ) {
+          source = backupSnapshot;
+          recovered = true;
+        }
+      }
+    }
+
+    const normalizedRows = source.rows.map(r => normalizeProductRow_(r, source.customHeaders));
+    const mergedRows = consolidateDuplicateRows_(normalizedRows, source.customHeaders);
     finalizeIds_(mergedRows);
-    rebuildProductsSheet_(sh, mergedRows, snapshot.customHeaders);
+    rebuildProductsSheet_(sh, mergedRows, source.customHeaders);
     cleanupManagedImageFiles_(mergedRows);
+
+    if (recovered) props.setProperty(BACKUP_RECOVERY_KEY, 'true');
+    props.setProperty('PRODUCT_SHEET_SCHEMA_VERSION', SCRIPT_VERSION);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function recoverProductsFromBackupAndSync() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(PRODUCT_SHEET);
+  const backup = findOriginalProductsBackup_(ss);
+  if (!sh) throw new Error('Products sheet not found.');
+  if (!backup) throw new Error('No _Products_Backup_* sheet found.');
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(30000)) throw new Error('Another Products sync is already running.');
+  try {
+    const source = snapshotProducts_(backup);
+    const normalizedRows = source.rows.map(r => normalizeProductRow_(r, source.customHeaders));
+    const mergedRows = consolidateDuplicateRows_(normalizedRows, source.customHeaders);
+    finalizeIds_(mergedRows);
+    rebuildProductsSheet_(sh, mergedRows, source.customHeaders);
+    cleanupManagedImageFiles_(mergedRows);
+    PropertiesService.getScriptProperties().setProperty(BACKUP_RECOVERY_KEY, 'true');
     PropertiesService.getScriptProperties().setProperty('PRODUCT_SHEET_SCHEMA_VERSION', SCRIPT_VERSION);
   } finally {
     lock.releaseLock();
   }
+}
+
+function findOriginalProductsBackup_(ss) {
+  return ss.getSheets()
+    .filter(s => /^_Products_Backup_/.test(s.getName()))
+    .sort((a, b) => a.getName().localeCompare(b.getName()))[0] || null;
+}
+
+function countSnapshotImages_(snapshot) {
+  return (snapshot.rows || []).reduce((n, r) => n + (r.images || []).filter(Boolean).length, 0);
+}
+
+function snapshotRichness_(snapshot) {
+  return (snapshot.rows || []).reduce((score, r) => {
+    const c = r.canonical || {};
+    if (cleanMultiline_(c['Product Description'])) score += 2;
+    if ((r.images || []).some(Boolean)) score += 3;
+    if (cleanLine_(c['Category'])) score += 1;
+    if (cleanLine_(c['Color']) || cleanLine_(c['Size']) || cleanLine_(c['SKU'])) score += 1;
+    return score;
+  }, 0);
 }
 
 function ensureOneTimeBackup_(sh) {
@@ -291,23 +364,16 @@ function consolidateDuplicateRows_(rows, customHeaders) {
 }
 
 function productIdentityKey_(row, customHeaders) {
-  // A real variant must remain separate. Same product repeated only because of
-  // different images will have the same key and its images will be consolidated.
   const explicitVariant = cleanKey_(row['Variant ID'] || row['SKU']);
   if (explicitVariant) return `variant:${explicitVariant}`;
 
-  const customKey = customHeaders.map(h => cleanKey_(row._custom[h.name])).filter(Boolean).join('|');
+  // Same name/price/color/size is one product. Differences in description
+  // or images are merged into the same row instead of creating duplicates.
   return [
     cleanKey_(row['Product Name']),
     normalizeNumberKey_(row['Price']),
-    cleanKey_(row['Category']),
-    cleanKey_(row['Subcategory']),
     cleanKey_(row['Color']),
-    cleanKey_(row['Size']),
-    cleanKey_(row['Product ID']),
-    cleanKey_(row['Product URL']),
-    cleanKey_(row['Product Description']),
-    customKey
+    cleanKey_(row['Size'])
   ].join('¦');
 }
 
@@ -361,35 +427,64 @@ function mergeProductRows_(base, incoming, customHeaders) {
 function finalizeIds_(rows) {
   const seenProductIds = new Set();
   rows.forEach((row, i) => {
-    const group = cleanLine_(row['Product Group ID']) || slugify_(row['Product Name']) || `product-${i + 1}`;
-    row['Product Group ID'] = group;
-
-    if (!row['Variant Name']) row['Variant Name'] = [row['Color'], row['Size']].filter(Boolean).join(' / ');
-    if (!row['Variant ID']) {
-      const suffix = [row['Color'], row['Size'], row['SKU']].filter(Boolean).join('-');
-      row['Variant ID'] = slugify_(suffix ? `${group}-${suffix}` : group) || group;
+    let productId = cleanLine_(row['Product ID']);
+    if (!productId) {
+      const seed = [
+        cleanKey_(row['Product Name']),
+        normalizeNumberKey_(row['Price']),
+        cleanKey_(row['Color']),
+        cleanKey_(row['Size'])
+      ].join('|');
+      productId = `prd-${stableShortHash_(seed)}`;
     }
 
-    let productId = cleanLine_(row['Product ID']) || row['Variant ID'];
-    if (seenProductIds.has(productId)) {
-      let n = 2;
-      const base = productId;
-      while (seenProductIds.has(`${base}-${n}`)) n++;
-      productId = `${base}-${n}`;
-    }
+    const baseId = productId;
+    let suffix = 2;
+    while (seenProductIds.has(productId)) productId = `${baseId}-${suffix++}`;
     row['Product ID'] = productId;
     seenProductIds.add(productId);
+
+    if (!cleanLine_(row['Product Group ID'])) row['Product Group ID'] = productId;
+
+    const hasRealVariant = !!(
+      cleanLine_(row['Variant ID']) || cleanLine_(row['SKU']) ||
+      cleanLine_(row['Color']) || cleanLine_(row['Size']) || cleanLine_(row['Variant Name'])
+    );
+    if (hasRealVariant && !cleanLine_(row['Variant ID'])) {
+      const variantSeed = [
+        productId,
+        cleanKey_(row['SKU']),
+        cleanKey_(row['Color']),
+        cleanKey_(row['Size']),
+        cleanKey_(row['Variant Name'])
+      ].join('|');
+      row['Variant ID'] = `var-${stableShortHash_(variantSeed)}`;
+    }
+    if (!hasRealVariant) row['Variant ID'] = '';
+
     if (!row['Updated At']) row['Updated At'] = new Date().toISOString();
   });
 }
 
+function stableShortHash_(text) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(text || ''))
+    .map(b => (b + 256) % 256)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
+    .slice(0, 12);
+}
+
 function rebuildProductsSheet_(sh, rows, customHeaders) {
-  const visibleHeaders = [...PRODUCT_COLUMNS, ...customHeaders.map(h => h.name)];
+  // Keep unknown custom data internally, but the merchant-facing canonical
+  // DB-aligned columns must always be contiguous and visible.
+  const visibleHeaders = [...PRODUCT_COLUMNS];
   const allHeaders = [...visibleHeaders, ...TECHNICAL_HEADERS];
   const requiredCols = allHeaders.length;
   const requiredRows = Math.max(2, rows.length + 1);
 
-  try { sh.getImages().forEach(img => { try { img.remove(); } catch (_) {} }); } catch (_) {}
+  try { const f = sh.getFilter(); if (f) f.remove(); } catch (_) {}
+  try { sh.showColumns(1, sh.getMaxColumns()); } catch (_) {}
+  try { sh.showRows(1, sh.getMaxRows()); } catch (_) {}
 
   if (sh.getMaxColumns() < requiredCols) {
     sh.insertColumnsAfter(sh.getMaxColumns(), requiredCols - sh.getMaxColumns());
@@ -400,7 +495,7 @@ function rebuildProductsSheet_(sh, rows, customHeaders) {
     sh.insertRowsAfter(sh.getMaxRows(), requiredRows - sh.getMaxRows());
   }
 
-  sh.clear();
+  sh.clear({contentsOnly:false});
   sh.getRange(1, 1, 1, requiredCols).setValues([allHeaders]);
 
   if (rows.length) {
@@ -411,104 +506,82 @@ function rebuildProductsSheet_(sh, rows, customHeaders) {
           const url = row._images[imageIndex] || '';
           return url ? imageFormula_(url) : '';
         }
-        return row[h] === null || row[h] === undefined ? '' : row[h];
+        const v = row[h];
+        return v === null || v === undefined ? '' : v;
       });
-      customHeaders.forEach(h => visible.push(row._custom[h.name] || ''));
 
-      const resolved = row._images.map(x => x || '');
-      const ids = row._imageMeta.map(x => x && x.managed ? (x.fileId || '') : '');
-      const hashes = row._imageMeta.map(x => x && x.managed ? (x.hash || '') : '');
-      return [...visible, ...resolved, ...ids, ...hashes];
+      const technical = [];
+      for (let i = 0; i < 5; i++) technical.push(row._images[i] || '');
+      for (let i = 0; i < 5; i++) technical.push(row._imageMeta[i]?.fileId || '');
+      for (let i = 0; i < 5; i++) technical.push(row._imageMeta[i]?.hash || '');
+      return [...visible, ...technical];
     });
     sh.getRange(2, 1, data.length, requiredCols).setValues(data);
   }
 
-  customHeaders.forEach((h, i) => {
-    sh.getRange(1, PRODUCT_COLUMNS.length + i + 1).setNote(`Original header: ${h.original}`);
-  });
-
   formatProductsSheet_(sh, visibleHeaders, rows.length);
-  const technicalStart = visibleHeaders.length + 1;
-  try { sh.hideColumns(technicalStart, TECHNICAL_HEADERS.length); } catch (_) {}
+  try { sh.showColumns(1, PRODUCT_COLUMNS.length); } catch (_) {}
+  try { sh.hideColumns(PRODUCT_COLUMNS.length + 1, TECHNICAL_HEADERS.length); } catch (_) {}
 }
 
 function formatProductsSheet_(sh, visibleHeaders, rowCount) {
-  const visibleCount = visibleHeaders.length;
+  const visibleCount = PRODUCT_COLUMNS.length;
   const lastRow = Math.max(1, rowCount + 1);
-  try { sh.setHiddenGridlines(true); } catch (_) {}
-  try { sh.setFrozenRows(1); } catch (_) {}
-  try { sh.setFrozenColumns(1); } catch (_) {}
-  try { const f = sh.getFilter(); if (f) f.remove(); } catch (_) {}
+  const range = sh.getRange(1, 1, lastRow, visibleCount);
 
-  const body = sh.getRange(1, 1, lastRow, visibleCount);
-  body
+  // Remove every old background/color/layout artifact.
+  range
+    .setBackground('#ffffff')
+    .setFontColor('#202124')
     .setFontFamily('Arial')
     .setFontSize(10)
-    .setFontColor('#202124')
-    .setBackground('#FFFFFF')
     .setVerticalAlignment('middle')
     .setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
 
   const header = sh.getRange(1, 1, 1, visibleCount);
   header
-    .setBackground('#1F4E78')
-    .setFontColor('#FFFFFF')
+    .setBackground('#ffffff')
+    .setFontColor('#202124')
     .setFontWeight('bold')
-    .setFontSize(11)
+    .setFontSize(10)
     .setHorizontalAlignment('center')
-    .setVerticalAlignment('middle');
-  sh.setRowHeight(1, 36);
+    .setVerticalAlignment('middle')
+    .setBorder(false, false, true, false, false, false, '#9aa0a6', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
 
+  try { sh.setFrozenRows(1); sh.setFrozenColumns(2); } catch (_) {}
+  sh.setRowHeight(1, 32);
   if (rowCount > 0) {
-    for (let r = 2; r <= rowCount + 1; r++) {
-      const desc = String(sh.getRange(r, PRODUCT_COLUMNS.indexOf('Product Description') + 1).getDisplayValue() || '');
-      const lines = Math.max(1, desc.split(/\n/).length);
-      const height = Math.min(112, Math.max(72, 52 + Math.min(lines, 4) * 12));
-      sh.setRowHeight(r, height);
-      if (r % 2 === 0) sh.getRange(r, 1, 1, visibleCount).setBackground('#F8FAFC');
-    }
+    sh.setRowHeights(2, rowCount, 82);
+    sh.getRange(2, 1, rowCount, visibleCount).setBackground('#ffffff');
   }
 
   const widths = {
-    'Product Name': 220, 'Category': 130, 'Subcategory': 140, 'Price': 100,
-    'Currency': 80, 'Product Description': 360, 'Product Image': 120,
-    'Image 2': 110, 'Image 3': 110, 'Image 4': 110, 'Image 5': 110,
-    'Product URL': 220, 'Color': 95, 'Size': 95, 'SKU': 120,
-    'Stock Status': 115, 'Stock Qty': 90, 'Offer': 150, 'Discount': 95,
-    'Aliases': 170, 'Active': 80, 'Product ID': 150, 'Product Group ID': 160,
-    'Variant ID': 160, 'Variant Name': 150, 'Updated At': 155
+    'Product ID':130,'Product Name':220,'Category':120,'Subcategory':130,
+    'Price':90,'Currency':75,'Stock Qty':85,'Stock Status':105,'Color':90,'Size':90,'SKU':120,
+    'Product Description':360,'Product Image':110,'Image 2':110,'Image 3':110,'Image 4':110,'Image 5':110,
+    'Product URL':220,'Offer':160,'Discount':90,'Aliases':180,'Active':70,
+    'Product Group ID':140,'Variant ID':140,'Variant Name':140,'Updated At':160
   };
-  visibleHeaders.forEach((h, i) => sh.setColumnWidth(i + 1, widths[h] || 140));
+  PRODUCT_COLUMNS.forEach((h, i) => sh.setColumnWidth(i + 1, widths[h] || 120));
 
   if (rowCount > 0) {
-    const dataRange = sh.getRange(2, 1, rowCount, visibleCount);
-    dataRange.setHorizontalAlignment('left');
+    const priceCol = PRODUCT_COLUMNS.indexOf('Price') + 1;
+    sh.getRange(2, priceCol, rowCount, 1).setNumberFormat('#,##0.##');
+    const qtyCol = PRODUCT_COLUMNS.indexOf('Stock Qty') + 1;
+    sh.getRange(2, qtyCol, rowCount, 1).setNumberFormat('0');
 
-    const priceCol = visibleHeaders.indexOf('Price') + 1;
-    if (priceCol > 0) sh.getRange(2, priceCol, rowCount, 1).setHorizontalAlignment('right').setNumberFormat('#,##0.##');
-
-    const qtyCol = visibleHeaders.indexOf('Stock Qty') + 1;
-    if (qtyCol > 0) sh.getRange(2, qtyCol, rowCount, 1).setHorizontalAlignment('center').setNumberFormat('0');
-
-    const centerHeaders = ['Currency', 'Product Image', 'Image 2', 'Image 3', 'Image 4', 'Image 5', 'Color', 'Size', 'SKU', 'Stock Status', 'Discount', 'Active', 'Product ID', 'Product Group ID', 'Variant ID', 'Updated At'];
-    centerHeaders.forEach(h => {
-      const c = visibleHeaders.indexOf(h) + 1;
-      if (c > 0) sh.getRange(2, c, rowCount, 1).setHorizontalAlignment('center');
-    });
-
-    const stockCol = visibleHeaders.indexOf('Stock Status') + 1;
-    if (stockCol > 0) {
-      const rule = SpreadsheetApp.newDataValidation()
+    const stockCol = PRODUCT_COLUMNS.indexOf('Stock Status') + 1;
+    sh.getRange(2, stockCol, rowCount, 1).setDataValidation(
+      SpreadsheetApp.newDataValidation()
         .requireValueInList(['In Stock', 'Out of Stock', 'Preorder'], true)
         .setAllowInvalid(true)
-        .build();
-      sh.getRange(2, stockCol, rowCount, 1).setDataValidation(rule);
-    }
+        .build()
+    );
 
-    const activeCol = visibleHeaders.indexOf('Active') + 1;
-    if (activeCol > 0) {
-      try { sh.getRange(2, activeCol, rowCount, 1).insertCheckboxes(); } catch (_) {}
-    }
+    const activeCol = PRODUCT_COLUMNS.indexOf('Active') + 1;
+    sh.getRange(2, activeCol, rowCount, 1).setDataValidation(
+      SpreadsheetApp.newDataValidation().requireCheckbox().build()
+    );
   }
 
   try { sh.getRange(1, 1, lastRow, visibleCount).createFilter(); } catch (_) {}
@@ -563,14 +636,10 @@ function resolveImageSlotFromSnapshot_(sh, sheetRow, sourceIndices, rowValues, r
 
 function cleanupManagedImageFiles_(rows) {
   const props = PropertiesService.getScriptProperties();
-  let previous = [];
-  try { previous = JSON.parse(props.getProperty(IMAGE_REGISTRY_KEY) || '[]'); } catch (_) { previous = []; }
   const current = [];
-  rows.forEach(row => row._imageMeta.forEach(m => {
+  rows.forEach(row => (row._imageMeta || []).forEach(m => {
     if (m && m.managed && m.fileId) current.push(m.fileId);
   }));
-  const currentSet = new Set(current);
-  previous.forEach(id => { if (id && !currentSet.has(id)) trashFile_(id); });
   props.setProperty(IMAGE_REGISTRY_KEY, JSON.stringify([...new Set(current)]));
 }
 
