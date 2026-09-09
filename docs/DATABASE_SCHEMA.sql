@@ -266,3 +266,48 @@ CREATE TABLE IF NOT EXISTS followup_log (
   sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(conversation_id, followup_no)
 );
+
+-- V4.2 product variant/media reconciliation migration
+ALTER TABLE products ADD COLUMN IF NOT EXISTS product_group_id TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS variant_id TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS variant_name TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS sku TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS product_url TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS attributes_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE INDEX IF NOT EXISTS idx_products_group ON products(account_id, product_group_id) WHERE active=TRUE;
+CREATE INDEX IF NOT EXISTS idx_products_variant ON products(account_id, variant_id) WHERE active=TRUE;
+
+CREATE TABLE IF NOT EXISTS product_media (
+  id BIGSERIAL PRIMARY KEY,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  media_key TEXT NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'url',
+  source_ref TEXT,
+  resolved_url TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(product_id, media_key)
+);
+CREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_id, sort_order) WHERE active=TRUE;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname='order_items_product_id_fkey'
+      AND conrelid='order_items'::regclass
+  ) THEN
+    ALTER TABLE order_items DROP CONSTRAINT order_items_product_id_fkey;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname='order_items_product_id_fkey'
+      AND conrelid='order_items'::regclass
+  ) THEN
+    ALTER TABLE order_items
+      ADD CONSTRAINT order_items_product_id_fkey
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL;
+  END IF;
+END $$;
