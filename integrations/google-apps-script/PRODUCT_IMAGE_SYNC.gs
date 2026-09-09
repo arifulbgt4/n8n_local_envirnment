@@ -1,21 +1,19 @@
 /**
- * AI Commerce V4.2 - Products sheet normalizer + direct-image synchronizer.
+ * AI Commerce V4.2 - Products sheet synchronizer.
  *
- * Goals:
- * - Existing product sheets are normalized in-place without deleting product data.
- * - Known/legacy/Bangla headers are renamed to canonical English headers.
- * - Missing canonical product columns are added automatically.
- * - Canonical columns are reordered into a consistent merchant-friendly layout.
- * - Legacy/custom columns are preserved but renamed to English Custom Field N and hidden.
- * - The full visible Products sheet is redesigned consistently (header, widths, rows,
- *   wrapping, filters, validation, alignment and number formatting).
- * - Direct Google Sheets images are copied to durable Drive URLs for n8n.
- * - Internal resolved-image/file-id/hash columns remain hidden.
+ * This script treats the Products sheet as a merchant-facing source of truth.
+ * It normalizes legacy headers to canonical English names, adds missing columns,
+ * removes layout noise, trims text, safely consolidates duplicate rows, preserves
+ * real variants, resolves direct images to durable Drive URLs, and keeps internal
+ * image metadata hidden for n8n.
  *
  * Bind this script to each Operations Spreadsheet and run
  * installProductImageSyncTriggers() once. No deployment is required.
  */
+
 const PRODUCT_SHEET = 'Products';
+const SCRIPT_VERSION = '4.2-products-v3';
+const IMAGE_REGISTRY_KEY = 'PRODUCT_IMAGE_FILE_REGISTRY_V3';
 
 const PRODUCT_COLUMNS = [
   'Product Name',
@@ -46,7 +44,7 @@ const PRODUCT_COLUMNS = [
   'Updated At'
 ];
 
-const SOURCE_IMAGE_HEADERS = ['Product Image', 'Image 2', 'Image 3', 'Image 4', 'Image 5'];
+const IMAGE_HEADERS = ['Product Image', 'Image 2', 'Image 3', 'Image 4', 'Image 5'];
 const RESOLVED_HEADERS = ['Resolved Image 1', 'Resolved Image 2', 'Resolved Image 3', 'Resolved Image 4', 'Resolved Image 5'];
 const FILE_ID_HEADERS = ['_Image File ID 1', '_Image File ID 2', '_Image File ID 3', '_Image File ID 4', '_Image File ID 5'];
 const HASH_HEADERS = ['_Image Hash 1', '_Image Hash 2', '_Image Hash 3', '_Image Hash 4', '_Image Hash 5'];
@@ -81,6 +79,15 @@ const HEADER_ALIASES = {
   'Updated At': ['Updated At', 'Updated', 'Last Updated', 'Modified At', 'আপডেটেড']
 };
 
+const NORMALIZED_ALIAS_MAP = (() => {
+  const out = {};
+  Object.entries(HEADER_ALIASES).forEach(([canonical, aliases]) => {
+    aliases.forEach(alias => { out[normalizeHeaderKey_(alias)] = canonical; });
+    out[normalizeHeaderKey_(canonical)] = canonical;
+  });
+  return out;
+})();
+
 function installProductImageSyncTriggers() {
   const ss = SpreadsheetApp.getActive();
   ScriptApp.getProjectTriggers().forEach(t => {
@@ -90,7 +97,6 @@ function installProductImageSyncTriggers() {
   });
   ScriptApp.newTrigger('onProductSheetEdit').forSpreadsheet(ss).onEdit().create();
   ScriptApp.newTrigger('syncProductSheetImages').timeBased().everyMinutes(5).create();
-  normalizeProductSheetLayout();
   syncProductSheetImages();
 }
 
@@ -99,162 +105,340 @@ function onProductSheetEdit(e) {
   syncProductSheetImages();
 }
 
-/** Public manual utility: safely normalize/reformat the whole Products sheet. */
+/** Manual utility. Runs the same full synchronization used by the triggers. */
 function normalizeProductSheetLayout() {
-  const sh = SpreadsheetApp.getActive().getSheetByName(PRODUCT_SHEET);
-  if (!sh) return;
-  normalizeProductSheetLayout_(sh);
+  syncProductSheetImages();
 }
 
 function syncProductSheetImages() {
   const sh = SpreadsheetApp.getActive().getSheetByName(PRODUCT_SHEET);
   if (!sh) return;
 
-  const map = normalizeProductSheetLayout_(sh);
-  if (sh.getLastRow() < 2) return;
-
-  const over = new Map();
-  sh.getImages().forEach(img => {
-    try {
-      const a = img.getAnchorCell();
-      over.set(`${a.getRow()}:${a.getColumn()}`, img);
-    } catch (_) {}
-  });
-
-  for (let row = 2; row <= sh.getLastRow(); row++) {
-    for (let i = 0; i < SOURCE_IMAGE_HEADERS.length; i++) {
-      const srcCol = map[SOURCE_IMAGE_HEADERS[i]];
-      if (!srcCol) continue;
-      syncImageSlot_(
-        sh,
-        row,
-        srcCol,
-        map[RESOLVED_HEADERS[i]],
-        map[FILE_ID_HEADERS[i]],
-        map[HASH_HEADERS[i]],
-        over,
-        i + 1
-      );
-    }
-  }
-}
-
-function normalizeProductSheetLayout_(sh) {
   const lock = LockService.getDocumentLock();
-  if (!lock.tryLock(30000)) return headerMap_(sh);
+  if (!lock.tryLock(30000)) return;
 
   try {
-    renameKnownAndLegacyHeaders_(sh);
-    ensureCanonicalColumns_(sh);
-    reorderCanonicalColumns_(sh);
-    renameUnknownColumns_(sh);
-    ensureTechnicalHeaders_(sh);
-
-    const map = headerMap_(sh);
-    formatProductSheet_(sh, map);
-    return map;
+    ensureOneTimeBackup_(sh);
+    const snapshot = snapshotProducts_(sh);
+    const normalizedRows = snapshot.rows.map(r => normalizeProductRow_(r, snapshot.customHeaders));
+    const mergedRows = consolidateDuplicateRows_(normalizedRows, snapshot.customHeaders);
+    finalizeIds_(mergedRows);
+    rebuildProductsSheet_(sh, mergedRows, snapshot.customHeaders);
+    cleanupManagedImageFiles_(mergedRows);
+    PropertiesService.getScriptProperties().setProperty('PRODUCT_SHEET_SCHEMA_VERSION', SCRIPT_VERSION);
   } finally {
     lock.releaseLock();
   }
 }
 
-function renameKnownAndLegacyHeaders_(sh) {
-  const headers = readHeaders_(sh);
-  const claimed = new Set();
-
-  headers.forEach((raw, i) => {
-    const h = String(raw || '').trim();
-    if (!h || TECHNICAL_HEADERS.includes(h)) return;
-
-    const canonical = canonicalHeader_(h);
-    if (!canonical) return;
-
-    // First matching legacy column becomes the canonical column. Duplicate
-    // semantic columns are preserved and handled later as Custom Field N.
-    if (!claimed.has(canonical)) {
-      if (h !== canonical) sh.getRange(1, i + 1).setValue(canonical);
-      claimed.add(canonical);
-    }
-  });
+function ensureOneTimeBackup_(sh) {
+  const ss = sh.getParent();
+  const existing = ss.getSheets().some(s => /^_Products_Backup_/.test(s.getName()));
+  if (existing) return;
+  try {
+    const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'Asia/Dhaka', 'yyyyMMdd_HHmmss');
+    const backup = sh.copyTo(ss).setName(`_Products_Backup_${stamp}`);
+    backup.hideSheet();
+  } catch (_) {}
 }
 
-function ensureCanonicalColumns_(sh) {
-  let headers = readHeaders_(sh);
-  PRODUCT_COLUMNS.forEach(h => {
-    if (headers.includes(h)) return;
-    sh.insertColumnAfter(Math.max(1, sh.getLastColumn()));
-    sh.getRange(1, sh.getLastColumn()).setValue(h);
-    headers = readHeaders_(sh);
-  });
-}
-
-function reorderCanonicalColumns_(sh) {
-  PRODUCT_COLUMNS.forEach((h, targetZero) => {
-    const target = targetZero + 1;
-    const headers = readHeaders_(sh);
-    const current = headers.indexOf(h) + 1;
-    if (!current || current === target) return;
-    const spec = sh.getRange(1, current, sh.getMaxRows(), 1);
-    sh.moveColumns(spec, target);
-  });
-}
-
-function renameUnknownColumns_(sh) {
-  let headers = readHeaders_(sh);
-  const canonicalSet = new Set(PRODUCT_COLUMNS);
-  const technicalSet = new Set(TECHNICAL_HEADERS);
-  let customNo = 1;
-
-  // Canonical fields are already the first block. Everything else is legacy,
-  // blank spacing, optional implementation metadata, or a custom merchant field.
-  for (let c = PRODUCT_COLUMNS.length + 1; c <= headers.length; c++) {
-    const raw = String(headers[c - 1] || '').trim();
-    if (technicalSet.has(raw)) continue;
-
-    if (!raw && !columnHasUserData_(sh, c)) {
-      try { sh.hideColumns(c); } catch (_) {}
-      continue;
-    }
-
-    if (canonicalSet.has(raw)) continue;
-    if (/^Custom Field \d+$/i.test(raw)) {
-      customNo++;
-      continue;
-    }
-
-    const newName = `Custom Field ${customNo++}`;
-    const cell = sh.getRange(1, c);
-    if (raw) cell.setNote(`Original header: ${raw}`);
-    cell.setValue(newName);
-    try { sh.hideColumns(c); } catch (_) {}
-  }
-}
-
-function ensureTechnicalHeaders_(sh) {
-  let headers = readHeaders_(sh);
-  TECHNICAL_HEADERS.forEach(h => {
-    if (headers.includes(h)) return;
-    sh.insertColumnAfter(Math.max(1, sh.getLastColumn()));
-    sh.getRange(1, sh.getLastColumn()).setValue(h);
-    headers = readHeaders_(sh);
-  });
-}
-
-function formatProductSheet_(sh, map) {
+function snapshotProducts_(sh) {
   const lastRow = Math.max(1, sh.getLastRow());
-  const visibleCount = PRODUCT_COLUMNS.length;
+  const lastCol = Math.max(1, sh.getLastColumn());
+  const headersRaw = sh.getRange(1, 1, 1, lastCol).getDisplayValues()[0].map(v => cleanLine_(v));
+  const values = lastRow > 1 ? sh.getRange(2, 1, lastRow - 1, lastCol).getValues() : [];
+  const displays = lastRow > 1 ? sh.getRange(2, 1, lastRow - 1, lastCol).getDisplayValues() : [];
+  const formulas = lastRow > 1 ? sh.getRange(2, 1, lastRow - 1, lastCol).getFormulas() : [];
 
+  const canonicalCols = {};
+  PRODUCT_COLUMNS.forEach(h => { canonicalCols[h] = []; });
+  const techCols = {};
+  TECHNICAL_HEADERS.forEach(h => { techCols[h] = -1; });
+  const unknownCols = [];
+
+  headersRaw.forEach((raw, i) => {
+    if (TECHNICAL_HEADERS.includes(raw)) {
+      techCols[raw] = i;
+      return;
+    }
+    const canonical = canonicalHeader_(raw);
+    if (canonical) {
+      canonicalCols[canonical].push(i);
+      return;
+    }
+    if (raw || columnHasDataInArrays_(values, displays, i)) unknownCols.push({ index: i, original: raw || `Column ${i + 1}` });
+  });
+
+  const customHeaders = unknownCols.map((c, i) => ({
+    index: c.index,
+    original: c.original,
+    name: `Custom Field ${i + 1}`
+  }));
+
+  const overGrid = new Map();
+  try {
+    sh.getImages().forEach(img => {
+      try {
+        const a = img.getAnchorCell();
+        overGrid.set(`${a.getRow()}:${a.getColumn()}`, img);
+      } catch (_) {}
+    });
+  } catch (_) {}
+
+  const rows = [];
+  for (let r = 0; r < values.length; r++) {
+    const sheetRow = r + 2;
+    const hasAny = displays[r].some(v => cleanLine_(v) !== '') || IMAGE_HEADERS.some(h => {
+      return canonicalCols[h].some(idx => overGrid.has(`${sheetRow}:${idx + 1}`));
+    });
+    if (!hasAny) continue;
+
+    const row = { canonical: {}, custom: {}, images: [], imageMeta: [] };
+    PRODUCT_COLUMNS.forEach(h => {
+      if (IMAGE_HEADERS.includes(h)) return;
+      row.canonical[h] = firstMeaningfulCell_(values[r], displays[r], formulas[r], canonicalCols[h]);
+    });
+    customHeaders.forEach(c => {
+      row.custom[c.name] = cleanMultiline_(displays[r][c.index]);
+    });
+
+    IMAGE_HEADERS.forEach((h, slotIndex) => {
+      const sourceIndices = canonicalCols[h];
+      const image = resolveImageSlotFromSnapshot_(
+        sh,
+        sheetRow,
+        sourceIndices,
+        values[r],
+        displays[r],
+        formulas[r],
+        overGrid,
+        techCols[RESOLVED_HEADERS[slotIndex]],
+        techCols[FILE_ID_HEADERS[slotIndex]],
+        techCols[HASH_HEADERS[slotIndex]]
+      );
+      row.images.push(image.url || '');
+      row.imageMeta.push(image);
+    });
+    rows.push(row);
+  }
+
+  return { rows, customHeaders };
+}
+
+function normalizeProductRow_(row, customHeaders) {
+  const c = row.canonical;
+  const out = {
+    'Product Name': cleanLine_(c['Product Name']),
+    'Category': cleanLine_(c['Category']),
+    'Subcategory': cleanLine_(c['Subcategory']),
+    'Price': parseNumber_(c['Price']),
+    'Currency': (cleanLine_(c['Currency']) || 'BDT').toUpperCase(),
+    'Product Description': cleanMultiline_(c['Product Description']),
+    'Product URL': cleanUrl_(c['Product URL']),
+    'Color': cleanLine_(c['Color']),
+    'Size': cleanLine_(c['Size']),
+    'SKU': cleanLine_(c['SKU']),
+    'Stock Status': normalizeStockStatus_(c['Stock Status']),
+    'Stock Qty': parseInteger_(c['Stock Qty']),
+    'Offer': cleanMultiline_(c['Offer']),
+    'Discount': cleanLine_(c['Discount']),
+    'Aliases': cleanLine_(c['Aliases']),
+    'Active': parseBoolean_(c['Active'], true),
+    'Product ID': cleanLine_(c['Product ID']),
+    'Product Group ID': cleanLine_(c['Product Group ID']),
+    'Variant ID': cleanLine_(c['Variant ID']),
+    'Variant Name': cleanLine_(c['Variant Name']),
+    'Updated At': normalizeUpdatedAt_(c['Updated At'])
+  };
+
+  if (!out['Stock Status'] && out['Stock Qty'] !== null) {
+    out['Stock Status'] = out['Stock Qty'] > 0 ? 'In Stock' : 'Out of Stock';
+  }
+  if (!out['Stock Status']) out['Stock Status'] = 'In Stock';
+
+  const images = [];
+  const meta = [];
+  row.images.forEach((url, i) => {
+    const clean = cleanUrl_(url);
+    if (!clean || images.includes(clean) || images.length >= 5) return;
+    images.push(clean);
+    meta.push({ ...row.imageMeta[i], url: clean });
+  });
+  while (images.length < 5) images.push('');
+  while (meta.length < 5) meta.push({ url: '', fileId: '', hash: '', managed: false });
+  out._images = images;
+  out._imageMeta = meta;
+  out._custom = {};
+  customHeaders.forEach(h => { out._custom[h.name] = cleanMultiline_(row.custom[h.name]); });
+  return out;
+}
+
+function consolidateDuplicateRows_(rows, customHeaders) {
+  const map = new Map();
+
+  rows.forEach(row => {
+    if (!row['Product Name']) return;
+    const key = productIdentityKey_(row, customHeaders);
+    if (!map.has(key)) {
+      map.set(key, cloneProductRow_(row));
+      return;
+    }
+    const base = map.get(key);
+    mergeProductRows_(base, row, customHeaders);
+  });
+
+  return [...map.values()];
+}
+
+function productIdentityKey_(row, customHeaders) {
+  // A real variant must remain separate. Same product repeated only because of
+  // different images will have the same key and its images will be consolidated.
+  const explicitVariant = cleanKey_(row['Variant ID'] || row['SKU']);
+  if (explicitVariant) return `variant:${explicitVariant}`;
+
+  const customKey = customHeaders.map(h => cleanKey_(row._custom[h.name])).filter(Boolean).join('|');
+  return [
+    cleanKey_(row['Product Name']),
+    normalizeNumberKey_(row['Price']),
+    cleanKey_(row['Category']),
+    cleanKey_(row['Subcategory']),
+    cleanKey_(row['Color']),
+    cleanKey_(row['Size']),
+    cleanKey_(row['Product ID']),
+    cleanKey_(row['Product URL']),
+    cleanKey_(row['Product Description']),
+    customKey
+  ].join('¦');
+}
+
+function cloneProductRow_(row) {
+  return {
+    ...row,
+    _images: [...row._images],
+    _imageMeta: row._imageMeta.map(x => ({ ...x })),
+    _custom: { ...row._custom }
+  };
+}
+
+function mergeProductRows_(base, incoming, customHeaders) {
+  const mergedImages = [];
+  const mergedMeta = [];
+  [...base._images, ...incoming._images].forEach((url, idx) => {
+    const clean = cleanUrl_(url);
+    if (!clean || mergedImages.includes(clean) || mergedImages.length >= 5) return;
+    mergedImages.push(clean);
+    const sourceMeta = idx < base._images.length ? base._imageMeta[idx] : incoming._imageMeta[idx - base._images.length];
+    mergedMeta.push({ ...(sourceMeta || {}), url: clean });
+  });
+  while (mergedImages.length < 5) mergedImages.push('');
+  while (mergedMeta.length < 5) mergedMeta.push({ url: '', fileId: '', hash: '', managed: false });
+  base._images = mergedImages;
+  base._imageMeta = mergedMeta;
+
+  const preferLonger = ['Product Description', 'Offer', 'Aliases'];
+  preferLonger.forEach(k => {
+    if (String(incoming[k] || '').length > String(base[k] || '').length) base[k] = incoming[k];
+  });
+
+  const fillIfBlank = ['Category', 'Subcategory', 'Currency', 'Product URL', 'Color', 'Size', 'SKU', 'Product ID', 'Product Group ID', 'Variant ID', 'Variant Name', 'Discount'];
+  fillIfBlank.forEach(k => { if (!base[k] && incoming[k]) base[k] = incoming[k]; });
+
+  if (base['Price'] === null && incoming['Price'] !== null) base['Price'] = incoming['Price'];
+  if (base['Stock Qty'] === null) base['Stock Qty'] = incoming['Stock Qty'];
+  else if (incoming['Stock Qty'] !== null) base['Stock Qty'] = Math.max(base['Stock Qty'], incoming['Stock Qty']);
+  if (incoming['Stock Status'] === 'In Stock') base['Stock Status'] = 'In Stock';
+  base['Active'] = base['Active'] || incoming['Active'];
+  base['Updated At'] = latestDateText_(base['Updated At'], incoming['Updated At']);
+
+  customHeaders.forEach(h => {
+    const a = cleanMultiline_(base._custom[h.name]);
+    const b = cleanMultiline_(incoming._custom[h.name]);
+    if (!a) base._custom[h.name] = b;
+    else if (b && a !== b) base._custom[h.name] = `${a} | ${b}`;
+  });
+}
+
+function finalizeIds_(rows) {
+  const seenProductIds = new Set();
+  rows.forEach((row, i) => {
+    const group = cleanLine_(row['Product Group ID']) || slugify_(row['Product Name']) || `product-${i + 1}`;
+    row['Product Group ID'] = group;
+
+    if (!row['Variant Name']) row['Variant Name'] = [row['Color'], row['Size']].filter(Boolean).join(' / ');
+    if (!row['Variant ID']) {
+      const suffix = [row['Color'], row['Size'], row['SKU']].filter(Boolean).join('-');
+      row['Variant ID'] = slugify_(suffix ? `${group}-${suffix}` : group) || group;
+    }
+
+    let productId = cleanLine_(row['Product ID']) || row['Variant ID'];
+    if (seenProductIds.has(productId)) {
+      let n = 2;
+      const base = productId;
+      while (seenProductIds.has(`${base}-${n}`)) n++;
+      productId = `${base}-${n}`;
+    }
+    row['Product ID'] = productId;
+    seenProductIds.add(productId);
+    if (!row['Updated At']) row['Updated At'] = new Date().toISOString();
+  });
+}
+
+function rebuildProductsSheet_(sh, rows, customHeaders) {
+  const visibleHeaders = [...PRODUCT_COLUMNS, ...customHeaders.map(h => h.name)];
+  const allHeaders = [...visibleHeaders, ...TECHNICAL_HEADERS];
+  const requiredCols = allHeaders.length;
+  const requiredRows = Math.max(2, rows.length + 1);
+
+  try { sh.getImages().forEach(img => { try { img.remove(); } catch (_) {} }); } catch (_) {}
+
+  if (sh.getMaxColumns() < requiredCols) {
+    sh.insertColumnsAfter(sh.getMaxColumns(), requiredCols - sh.getMaxColumns());
+  } else if (sh.getMaxColumns() > requiredCols) {
+    sh.deleteColumns(requiredCols + 1, sh.getMaxColumns() - requiredCols);
+  }
+  if (sh.getMaxRows() < requiredRows) {
+    sh.insertRowsAfter(sh.getMaxRows(), requiredRows - sh.getMaxRows());
+  }
+
+  sh.clear();
+  sh.getRange(1, 1, 1, requiredCols).setValues([allHeaders]);
+
+  if (rows.length) {
+    const data = rows.map(row => {
+      const visible = PRODUCT_COLUMNS.map(h => {
+        const imageIndex = IMAGE_HEADERS.indexOf(h);
+        if (imageIndex >= 0) {
+          const url = row._images[imageIndex] || '';
+          return url ? imageFormula_(url) : '';
+        }
+        return row[h] === null || row[h] === undefined ? '' : row[h];
+      });
+      customHeaders.forEach(h => visible.push(row._custom[h.name] || ''));
+
+      const resolved = row._images.map(x => x || '');
+      const ids = row._imageMeta.map(x => x && x.managed ? (x.fileId || '') : '');
+      const hashes = row._imageMeta.map(x => x && x.managed ? (x.hash || '') : '');
+      return [...visible, ...resolved, ...ids, ...hashes];
+    });
+    sh.getRange(2, 1, data.length, requiredCols).setValues(data);
+  }
+
+  customHeaders.forEach((h, i) => {
+    sh.getRange(1, PRODUCT_COLUMNS.length + i + 1).setNote(`Original header: ${h.original}`);
+  });
+
+  formatProductsSheet_(sh, visibleHeaders, rows.length);
+  const technicalStart = visibleHeaders.length + 1;
+  try { sh.hideColumns(technicalStart, TECHNICAL_HEADERS.length); } catch (_) {}
+}
+
+function formatProductsSheet_(sh, visibleHeaders, rowCount) {
+  const visibleCount = visibleHeaders.length;
+  const lastRow = Math.max(1, rowCount + 1);
+  try { sh.setHiddenGridlines(true); } catch (_) {}
   try { sh.setFrozenRows(1); } catch (_) {}
   try { sh.setFrozenColumns(1); } catch (_) {}
-  try {
-    const f = sh.getFilter();
-    if (f) f.remove();
-  } catch (_) {}
-  try {
-    if (lastRow >= 1) sh.getRange(1, 1, lastRow, visibleCount).createFilter();
-  } catch (_) {}
-
-  try { sh.getBandings().forEach(b => b.remove()); } catch (_) {}
+  try { const f = sh.getFilter(); if (f) f.remove(); } catch (_) {}
 
   const body = sh.getRange(1, 1, lastRow, visibleCount);
   body
@@ -275,193 +459,261 @@ function formatProductSheet_(sh, map) {
     .setVerticalAlignment('middle');
   sh.setRowHeight(1, 36);
 
-  if (lastRow > 1) {
-    sh.setRowHeights(2, lastRow - 1, 96);
-    // Light zebra striping without carrying over old random fills.
-    for (let r = 2; r <= lastRow; r++) {
+  if (rowCount > 0) {
+    for (let r = 2; r <= rowCount + 1; r++) {
+      const desc = String(sh.getRange(r, PRODUCT_COLUMNS.indexOf('Product Description') + 1).getDisplayValue() || '');
+      const lines = Math.max(1, desc.split(/\n/).length);
+      const height = Math.min(112, Math.max(72, 52 + Math.min(lines, 4) * 12));
+      sh.setRowHeight(r, height);
       if (r % 2 === 0) sh.getRange(r, 1, 1, visibleCount).setBackground('#F8FAFC');
     }
   }
 
   const widths = {
     'Product Name': 220, 'Category': 130, 'Subcategory': 140, 'Price': 100,
-    'Currency': 85, 'Product Description': 380, 'Product Image': 150,
-    'Image 2': 130, 'Image 3': 130, 'Image 4': 130, 'Image 5': 130,
-    'Product URL': 240, 'Color': 100, 'Size': 100, 'SKU': 130,
-    'Stock Status': 120, 'Stock Qty': 90, 'Offer': 160, 'Discount': 100,
-    'Aliases': 180, 'Active': 80, 'Product ID': 150, 'Product Group ID': 160,
-    'Variant ID': 160, 'Variant Name': 160, 'Updated At': 160
+    'Currency': 80, 'Product Description': 360, 'Product Image': 120,
+    'Image 2': 110, 'Image 3': 110, 'Image 4': 110, 'Image 5': 110,
+    'Product URL': 220, 'Color': 95, 'Size': 95, 'SKU': 120,
+    'Stock Status': 115, 'Stock Qty': 90, 'Offer': 150, 'Discount': 95,
+    'Aliases': 170, 'Active': 80, 'Product ID': 150, 'Product Group ID': 160,
+    'Variant ID': 160, 'Variant Name': 150, 'Updated At': 155
   };
-  Object.entries(widths).forEach(([h, w]) => {
-    const c = map[h];
-    if (c) sh.setColumnWidth(c, w);
-  });
+  visibleHeaders.forEach((h, i) => sh.setColumnWidth(i + 1, widths[h] || 140));
 
-  const left = ['Product Name', 'Category', 'Subcategory', 'Product Description', 'Product URL', 'Offer', 'Aliases', 'Variant Name'];
-  const center = ['Currency', 'Product Image', 'Image 2', 'Image 3', 'Image 4', 'Image 5', 'Color', 'Size', 'SKU', 'Stock Status', 'Stock Qty', 'Discount', 'Active', 'Product ID', 'Product Group ID', 'Variant ID', 'Updated At'];
-  if (lastRow > 1) {
-    left.forEach(h => { const c = map[h]; if (c) sh.getRange(2, c, lastRow - 1, 1).setHorizontalAlignment('left'); });
-    center.forEach(h => { const c = map[h]; if (c) sh.getRange(2, c, lastRow - 1, 1).setHorizontalAlignment('center'); });
-    const priceCol = map['Price'];
-    if (priceCol) sh.getRange(2, priceCol, lastRow - 1, 1).setHorizontalAlignment('right').setNumberFormat('#,##0.##');
-    const qtyCol = map['Stock Qty'];
-    if (qtyCol) sh.getRange(2, qtyCol, lastRow - 1, 1).setNumberFormat('0');
+  if (rowCount > 0) {
+    const dataRange = sh.getRange(2, 1, rowCount, visibleCount);
+    dataRange.setHorizontalAlignment('left');
 
-    const stockCol = map['Stock Status'];
-    if (stockCol) {
+    const priceCol = visibleHeaders.indexOf('Price') + 1;
+    if (priceCol > 0) sh.getRange(2, priceCol, rowCount, 1).setHorizontalAlignment('right').setNumberFormat('#,##0.##');
+
+    const qtyCol = visibleHeaders.indexOf('Stock Qty') + 1;
+    if (qtyCol > 0) sh.getRange(2, qtyCol, rowCount, 1).setHorizontalAlignment('center').setNumberFormat('0');
+
+    const centerHeaders = ['Currency', 'Product Image', 'Image 2', 'Image 3', 'Image 4', 'Image 5', 'Color', 'Size', 'SKU', 'Stock Status', 'Discount', 'Active', 'Product ID', 'Product Group ID', 'Variant ID', 'Updated At'];
+    centerHeaders.forEach(h => {
+      const c = visibleHeaders.indexOf(h) + 1;
+      if (c > 0) sh.getRange(2, c, rowCount, 1).setHorizontalAlignment('center');
+    });
+
+    const stockCol = visibleHeaders.indexOf('Stock Status') + 1;
+    if (stockCol > 0) {
       const rule = SpreadsheetApp.newDataValidation()
         .requireValueInList(['In Stock', 'Out of Stock', 'Preorder'], true)
         .setAllowInvalid(true)
         .build();
-      sh.getRange(2, stockCol, lastRow - 1, 1).setDataValidation(rule);
+      sh.getRange(2, stockCol, rowCount, 1).setDataValidation(rule);
     }
 
-    const activeCol = map['Active'];
-    if (activeCol) {
-      const rule = SpreadsheetApp.newDataValidation().requireCheckbox().setAllowInvalid(true).build();
-      sh.getRange(2, activeCol, lastRow - 1, 1).setDataValidation(rule);
+    const activeCol = visibleHeaders.indexOf('Active') + 1;
+    if (activeCol > 0) {
+      try { sh.getRange(2, activeCol, rowCount, 1).insertCheckboxes(); } catch (_) {}
     }
   }
 
-  // Optional image columns remain available but are hidden while completely empty.
-  ['Image 2', 'Image 3', 'Image 4', 'Image 5'].forEach(h => {
-    const c = map[h];
-    if (!c) return;
-    const hasData = lastRow > 1 && columnHasUserData_(sh, c);
-    try { if (hasData) sh.showColumns(c); else sh.hideColumns(c); } catch (_) {}
-  });
-
-  // Keep internal image implementation hidden from the merchant-facing sheet.
-  TECHNICAL_HEADERS.forEach(h => {
-    const c = map[h];
-    if (c) try { sh.hideColumns(c); } catch (_) {}
-  });
-
-  // Hide preserved custom/legacy columns. Data is retained, and the original
-  // header is kept in the header note.
-  readHeaders_(sh).forEach((h, i) => {
-    if (/^Custom Field \d+$/i.test(String(h || '').trim())) {
-      try { sh.hideColumns(i + 1); } catch (_) {}
-    }
-  });
+  try { sh.getRange(1, 1, lastRow, visibleCount).createFilter(); } catch (_) {}
 }
 
-function canonicalHeader_(header) {
-  const needle = normalizeHeader_(header);
-  for (const canonical of PRODUCT_COLUMNS) {
-    const aliases = HEADER_ALIASES[canonical] || [canonical];
-    if (aliases.some(a => normalizeHeader_(a) === needle)) return canonical;
-  }
-  return '';
-}
+function resolveImageSlotFromSnapshot_(sh, sheetRow, sourceIndices, rowValues, rowDisplays, rowFormulas, overGrid, resolvedIdx, idIdx, hashIdx) {
+  const oldResolved = resolvedIdx >= 0 ? cleanUrl_(rowDisplays[resolvedIdx]) : '';
+  const oldId = idIdx >= 0 ? cleanLine_(rowDisplays[idIdx]) : '';
+  const oldHash = hashIdx >= 0 ? cleanLine_(rowDisplays[hashIdx]) : '';
 
-function normalizeHeader_(v) {
-  return String(v || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[৳₹$€£]/g, '')
-    .replace(/[()\[\]{}._\-/\\]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function readHeaders_(sh) {
-  const last = Math.max(1, sh.getLastColumn());
-  return sh.getRange(1, 1, 1, last).getDisplayValues()[0].map(v => String(v || '').trim());
-}
-
-function headerMap_(sh) {
-  const map = {};
-  readHeaders_(sh).forEach((h, i) => { if (h) map[h] = i + 1; });
-  return map;
-}
-
-function columnHasUserData_(sh, col) {
-  if (sh.getLastRow() < 2) return false;
-  const values = sh.getRange(2, col, sh.getLastRow() - 1, 1).getDisplayValues();
-  return values.some(r => String(r[0] || '').trim() !== '');
-}
-
-function syncImageSlot_(sh, row, srcCol, resCol, idCol, hashCol, over, slot) {
-  if (!srcCol || !resCol || !idCol || !hashCol) return;
-
-  const src = sh.getRange(row, srcCol);
-  const resolved = sh.getRange(row, resCol);
-  const idCell = sh.getRange(row, idCol);
-  const hashCell = sh.getRange(row, hashCol);
-  const oldId = String(idCell.getDisplayValue() || '').trim();
-
-  let url = extractUrl_(src);
+  let url = '';
   let blob = null;
 
-  const grid = over.get(`${row}:${srcCol}`);
-  if (grid) {
-    try { blob = grid.getBlob(); } catch (_) {}
-  }
-
-  if (!blob && !url) {
-    const v = src.getValue();
-    if (v && typeof v === 'object' && typeof v.getContentUrl === 'function') {
-      try { blob = UrlFetchApp.fetch(v.getContentUrl()).getBlob(); } catch (_) {}
+  for (const idx of sourceIndices) {
+    if (!url) url = extractUrlFromSnapshotCell_(rowValues[idx], rowDisplays[idx], rowFormulas[idx]);
+    if (!blob) {
+      const over = overGrid.get(`${sheetRow}:${idx + 1}`);
+      if (over) {
+        try { blob = over.getBlob(); } catch (_) {}
+      }
     }
+    if (!blob) blob = blobFromCellImage_(rowValues[idx]);
   }
 
   if (url) {
-    trashFile_(oldId);
-    resolved.setValue(url);
-    idCell.clearContent();
-    hashCell.clearContent();
-    return;
+    if (oldId) trashFile_(oldId);
+    return { url, fileId: '', hash: '', managed: false };
   }
 
   if (blob) {
     const hash = blobHash_(blob);
-    const oldHash = String(hashCell.getDisplayValue() || '').trim();
-    if (oldId && oldHash === hash) {
-      resolved.setValue(driveViewUrl_(oldId));
-      return;
+    if (oldId && oldHash === hash && oldResolved) {
+      return { url: oldResolved, fileId: oldId, hash, managed: true };
     }
-
-    trashFile_(oldId);
-    const ext = (blob.getContentType() || 'image/jpeg').split('/')[1] || 'jpg';
-    const product = productFileKey_(sh, row);
-    blob.setName(`${product}-image-${slot}.${ext}`);
-
+    if (oldId) trashFile_(oldId);
+    const ext = imageExtension_(blob.getContentType());
+    blob.setName(`product-image-${sheetRow}-${Date.now()}.${ext}`);
     const file = DriveApp.createFile(blob);
     try { file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); } catch (_) {}
-
-    idCell.setValue(file.getId());
-    hashCell.setValue(hash);
-    resolved.setValue(driveViewUrl_(file.getId()));
-    return;
+    return { url: driveViewUrl_(file.getId()), fileId: file.getId(), hash, managed: true };
   }
 
-  // Source image was removed: remove the durable copy and technical refs too.
-  trashFile_(oldId);
-  resolved.clearContent();
-  idCell.clearContent();
-  hashCell.clearContent();
+  if (oldId) trashFile_(oldId);
+  return { url: '', fileId: '', hash: '', managed: false };
 }
 
-function productFileKey_(sh, row) {
-  const headers = readHeaders_(sh);
-  const preferred = ['Product ID', 'SKU', 'Variant ID', 'Product Name'];
-  for (const h of preferred) {
-    const c = headers.indexOf(h);
-    if (c >= 0) {
-      const v = String(sh.getRange(row, c + 1).getDisplayValue() || '').trim();
-      if (v) return v.replace(/[^\p{L}\p{N}\w\-.]+/gu, '_').slice(0, 80);
-    }
+function cleanupManagedImageFiles_(rows) {
+  const props = PropertiesService.getScriptProperties();
+  let previous = [];
+  try { previous = JSON.parse(props.getProperty(IMAGE_REGISTRY_KEY) || '[]'); } catch (_) { previous = []; }
+  const current = [];
+  rows.forEach(row => row._imageMeta.forEach(m => {
+    if (m && m.managed && m.fileId) current.push(m.fileId);
+  }));
+  const currentSet = new Set(current);
+  previous.forEach(id => { if (id && !currentSet.has(id)) trashFile_(id); });
+  props.setProperty(IMAGE_REGISTRY_KEY, JSON.stringify([...new Set(current)]));
+}
+
+function firstMeaningfulCell_(rowValues, rowDisplays, rowFormulas, indices) {
+  for (const idx of indices) {
+    const formula = String(rowFormulas[idx] || '').trim();
+    const value = rowValues[idx];
+    const display = rowDisplays[idx];
+    if (formula && !/^=IMAGE\(/i.test(formula)) return display || formula;
+    if (value !== '' && value !== null && value !== undefined && typeof value !== 'object') return value;
+    if (cleanLine_(display)) return display;
   }
-  return `row-${row}`;
+  return '';
 }
 
-function extractUrl_(cell) {
-  const f = String(cell.getFormula() || '').trim();
+function extractUrlFromSnapshotCell_(value, display, formula) {
+  const f = String(formula || '').trim();
   const m = f.match(/^=IMAGE\(\s*["']([^"']+)["']/i);
-  if (m) return m[1];
-  const v = cell.getDisplayValue();
-  return /^https?:\/\//i.test(String(v || '').trim()) ? String(v).trim() : '';
+  if (m) return cleanUrl_(m[1]);
+  const d = cleanLine_(display);
+  if (/^https?:\/\//i.test(d)) return cleanUrl_(d);
+  if (typeof value === 'string' && /^https?:\/\//i.test(value.trim())) return cleanUrl_(value);
+  return '';
+}
+
+function blobFromCellImage_(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (typeof value.getContentUrl !== 'function') return null;
+  try { return UrlFetchApp.fetch(value.getContentUrl()).getBlob(); } catch (_) { return null; }
+}
+
+function canonicalHeader_(raw) {
+  const key = normalizeHeaderKey_(raw);
+  return NORMALIZED_ALIAS_MAP[key] || '';
+}
+
+function normalizeHeaderKey_(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[৳₹$€£]/g, '')
+    .replace(/[()\[\]{}._\-/:\\]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function cleanLine_(value) {
+  return String(value === null || value === undefined ? '' : value)
+    .replace(/[\u00A0\t\r\n]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function cleanMultiline_(value) {
+  return String(value === null || value === undefined ? '' : value)
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(line => line.replace(/[\u00A0\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+function cleanUrl_(value) {
+  const s = cleanLine_(value);
+  if (!s) return '';
+  const m = s.match(/^=IMAGE\(\s*["']([^"']+)["']/i);
+  const candidate = m ? m[1] : s;
+  return /^https?:\/\//i.test(candidate) ? candidate.trim() : '';
+}
+
+function parseNumber_(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const s = String(value || '')
+    .replace(/,/g, '')
+    .replace(/[৳₹$€£]/g, '')
+    .replace(/[^0-9.\-]/g, '');
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseInteger_(value) {
+  const n = parseNumber_(value);
+  return n === null ? null : Math.max(0, Math.round(n));
+}
+
+function parseBoolean_(value, defaultValue) {
+  if (typeof value === 'boolean') return value;
+  const s = cleanLine_(value).toLowerCase();
+  if (!s) return defaultValue;
+  if (['false', '0', 'no', 'off', 'inactive', 'disabled'].includes(s)) return false;
+  if (['true', '1', 'yes', 'on', 'active', 'enabled'].includes(s)) return true;
+  return defaultValue;
+}
+
+function normalizeStockStatus_(value) {
+  const s = cleanLine_(value).toLowerCase();
+  if (!s) return '';
+  if (/out|sold|unavailable|নাই|শেষ/.test(s)) return 'Out of Stock';
+  if (/pre.?order|advance|booking|প্রি.?অর্ডার/.test(s)) return 'Preorder';
+  if (/in.?stock|available|yes|আছে|স্টক/.test(s)) return 'In Stock';
+  return cleanLine_(value);
+}
+
+function normalizeUpdatedAt_(value) {
+  if (value instanceof Date && !isNaN(value.getTime())) return value.toISOString();
+  const s = cleanLine_(value);
+  if (!s) return '';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? s : d.toISOString();
+}
+
+function latestDateText_(a, b) {
+  if (!a) return b || '';
+  if (!b) return a;
+  const da = new Date(a), db = new Date(b);
+  if (isNaN(da.getTime())) return b || a;
+  if (isNaN(db.getTime())) return a;
+  return db > da ? b : a;
+}
+
+function cleanKey_(value) {
+  return cleanLine_(value).toLowerCase();
+}
+
+function normalizeNumberKey_(value) {
+  return value === null || value === undefined || value === '' ? '' : String(Number(value));
+}
+
+function slugify_(value) {
+  return cleanLine_(value)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 100);
+}
+
+function imageFormula_(url) {
+  const escaped = String(url).replace(/"/g, '""');
+  return `=IMAGE("${escaped}",4,72,72)`;
+}
+
+function imageExtension_(contentType) {
+  const type = String(contentType || 'image/jpeg').toLowerCase();
+  if (type.includes('png')) return 'png';
+  if (type.includes('webp')) return 'webp';
+  if (type.includes('gif')) return 'gif';
+  return 'jpg';
 }
 
 function blobHash_(blob) {
@@ -478,4 +730,13 @@ function driveViewUrl_(id) {
 function trashFile_(id) {
   if (!id) return;
   try { DriveApp.getFileById(id).setTrashed(true); } catch (_) {}
+}
+
+function columnHasDataInArrays_(values, displays, idx) {
+  for (let r = 0; r < displays.length; r++) {
+    if (cleanLine_(displays[r][idx])) return true;
+    const v = values[r][idx];
+    if (v !== '' && v !== null && v !== undefined && typeof v === 'object') return true;
+  }
+  return false;
 }
