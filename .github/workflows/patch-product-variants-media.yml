@@ -1,0 +1,70 @@
+name: Apply product variants and media reconciliation
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/patch-product-variants-media.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Reconstruct and apply patch
+        shell: bash
+        run: |
+          cat \
+            .github/patches/product_variants_part_00.b64 \
+            .github/patches/product_variants_part_01.b64 \
+            .github/patches/product_variants_part_02a.b64 \
+            .github/patches/product_variants_part_02b.b64 \
+            .github/patches/product_variants_part_02c.b64 \
+            .github/patches/product_variants_part_02d.b64 \
+            .github/patches/product_variants_part_02e.b64 \
+            .github/patches/product_variants_part_02f.b64 \
+            .github/patches/product_variants_part_02g.b64 \
+            .github/patches/product_variants_part_02h.b64 \
+            | base64 -d > /tmp/patch.py
+          python3 -m py_compile /tmp/patch.py
+          python3 /tmp/patch.py
+
+      - name: Validate generated workflow JSON
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          paths = [
+              'workflows/modular/01_SETUP_CONFIG_V4_2.json',
+              'workflows/modular/01C_OPERATIONS_INIT_V4_2.json',
+              'workflows/modular/02_CATALOG_SYNC_V4_2.json',
+              'workflows/modular/05_META_MESSAGING_V4_2.json',
+          ]
+          for p in paths:
+              with open(p, encoding='utf-8') as f:
+                  json.load(f)
+          print('JSON_OK')
+          PY
+          test -f integrations/google-apps-script/PRODUCT_IMAGE_SYNC.gs
+          test -f docs/PRODUCT_CATALOG.md
+          grep -q 'product_media' init-db/001-init.sql
+          grep -q '05M.14 - Delete Products Removed From Sheet' workflows/modular/02_CATALOG_SYNC_V4_2.json
+
+      - name: Commit and push patch
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/workflows/patch-product-variants-media.yml
+          rm -f .github/patches/product_variants_part_*.b64
+          rmdir .github/patches 2>/dev/null || true
+          git add -A
+          git commit -m 'Support product variants, direct images and sheet reconciliation'
+          git push origin master
