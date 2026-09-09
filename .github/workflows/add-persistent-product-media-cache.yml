@@ -21,7 +21,10 @@ jobs:
       - name: Validate media cache service
         run: node --check services/media-cache/server.mjs
       - name: Validate Docker Compose
-        run: docker compose config >/dev/null
+        run: |
+          cp .env.example .env
+          docker compose config >/dev/null
+          rm -f .env
       - name: Commit patch and clean temporary files
         run: |
           rm -f .github/workflows/add-persistent-product-media-cache.yml
