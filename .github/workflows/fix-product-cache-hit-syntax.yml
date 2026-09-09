@@ -16,108 +16,33 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Patch Product Cache HIT code safely
+      - name: Patch workflow JSON
         shell: bash
+        env:
+          CACHE_HIT_B64: Y29uc3QgcSA9IFN0cmluZygkanNvbi5iYXNlPy5ub3JtYWxpemVkUXVlc3Rpb24gfHwgJGpzb24uYmFzZT8ubWVzc2FnZSB8fCAnJykudG9Mb3dlckNhc2UoKTsKY29uc3QgaXNMaXN0UmVxdWVzdCA9IC9hbGwgcHJvZHVjdHM/fHByb2R1Y3QgbGlzdHxwcm9kdWN0cyBsaXN0fGNhdGFsb2d8c2hvdyBwcm9kdWN0cz98bGlzdCBwcm9kdWN0cz98a2lccypraVxzKig/OnByb2R1Y3RzP3xwcm9kdWN0fHNoYXJpfHNhcmVlfHNhcmkpfGtvblxzKmtvblxzKig/OnNoYXJpfHNhcmVlfHNhcml8cHJvZHVjdHM/KXwoPzpzaGFyaXxzYXJlZXxzYXJpKVxzKig/OmtpXHMqa2l8YWNoZXxhY3l8YXNlKXxraVxzKig/OnNoYXJpfHNhcmVlfHNhcmkpXHMqKD86YWNoZXxhY3l8YXNlKXzgprjgpqxccyooPzrgpqrgp43gprDgp4vgpqHgpr7gppXgp43gpp984Kaq4Kaj4KeN4KavKXzgpqrgp43gprDgp4vgpqHgpr7gppXgp43gpp9ccyrgprLgpr/gprjgp43gpp984Kaq4Kaj4KeN4Kav4KeH4KawXHMq4Kay4Ka/4Ka44KeN4KaffOCmleCmv1xzKuCmleCmv1xzKig/OuCmquCnjeCmsOCni+CmoeCmvuCmleCnjeCmn3zgpqrgpqPgp43gpq984Ka24Ka+4Kah4Ka84Ka/fOCmtuCmvuCnnOCmvyl84KaV4KeAXHMq4KaV4KeAXHMqKD864Kaq4KeN4Kaw4KeL4Kah4Ka+4KaV4KeN4KaffOCmquCmo+CnjeCmr3zgprbgpr7gpqHgprzgpr984Ka24Ka+4Kec4Ka/KXzgppXgp4vgpqhccyrgppXgp4vgpqhccyooPzrgprbgpr7gpqHgprzgpr984Ka24Ka+4Kec4Ka/fOCmquCnjeCmsOCni+CmoeCmvuCmleCnjeCmn3zgpqrgpqPgp43gpq8pfOCmuOCmrOCml+CngeCmsuCni1xzKig/OuCmquCnjeCmsOCni+CmoeCmvuCmleCnjeCmn3zgpqrgpqPgp43gpq8pL2kudGVzdChxKTsKY29uc3QgaXNBbHRlcm5hdGl2ZVJlcXVlc3QgPSAv4KaG4KawXHMqKD864KaV4KeL4KaofOCmleCni+CmqOCni3zgppXgpr984KaV4KeAKXzgpoXgpqjgp43gpq984KaG4Kaw4KeH4KaVfOCmhuCmsOCmk3zgpqzgpr7gppXgpr98b3RoZXJ8YW5vdGhlcnxlbHNlfGRpZmZlcmVudHxtb3JlL2kudGVzdChxKTsKaWYgKGlzTGlzdFJlcXVlc3QgfHwgaXNBbHRlcm5hdGl2ZVJlcXVlc3QgfHwgISRqc29uLmNhY2hlX3JlcGx5KSByZXR1cm4gW107Cgpjb25zdCBiYXNlID0gJGpzb24uYmFzZSB8fCB7fTsKY29uc3QgYXJyID0gQXJyYXkuaXNBcnJheSgkanNvbi5wcm9kdWN0cykgPyAkanNvbi5wcm9kdWN0cyA6IFtdOwpjb25zdCBzZWxlY3RlZCA9IGFyci5maW5kKHAgPT4gU3RyaW5nKHAuaWQpID09PSBTdHJpbmcoJGpzb24udG9wX3Byb2R1Y3RfaWQpKSB8fCBhcnJbMF0gfHwge307CmxldCB1cmxzID0gQXJyYXkuaXNBcnJheShzZWxlY3RlZC5tZWRpYV91cmxzKSA/IHNlbGVjdGVkLm1lZGlhX3VybHMgOiBbXTsKaWYgKCF1cmxzLmxlbmd0aCAmJiBzZWxlY3RlZC5pbWFnZV91cmwpIHVybHMgPSBbc2VsZWN0ZWQuaW1hZ2VfdXJsXTsKCmNvbnN0IHN0cmlwTWVkaWFMaW5rcyA9ICh2YWx1ZSkgPT4gU3RyaW5nKHZhbHVlIHx8ICcnKQogIC5yZXBsYWNlKC9odHRwcz86XC9cLyg/OmRyaXZlXC5nb29nbGVcLmNvbXxbXlxzL10qZ29vZ2xldXNlcmNvbnRlbnRcLmNvbSlcL1teXHNdKy9naSwgJycpCiAgLnJlcGxhY2UoL1xuezMsfS9nLCAnXG5cbicpCiAgLnRyaW0oKTsKCnJldHVybiBbewogIGpzb246IHsKICAgIC4uLmJhc2UsCiAgICByZXBseTogc3RyaXBNZWRpYUxpbmtzKCRqc29uLmNhY2hlX3JlcGx5KSwKICAgIHNlbGVjdGVkUHJvZHVjdElkOiAkanNvbi50b3BfcHJvZHVjdF9pZCA/IFN0cmluZygkanNvbi50b3BfcHJvZHVjdF9pZCkgOiAnJywKICAgIHByb2R1Y3RJbWFnZVVybDogdXJsc1swXSB8fCAnJywKICAgIHByb2R1Y3RJbWFnZVVybHM6IHVybHMuc2xpY2UoMCwgNSksCiAgICB3YW50c0ltYWdlOiAhIWJhc2Uud2FudHNJbWFnZSwKICAgIHN0YXRlOiAnQlJPV1NJTkcnLAogICAgY29udGV4dFBhdGNoOiB7IHNlbGVjdGVkX3Byb2R1Y3Q6IHsgcHJvZHVjdElkOiAkanNvbi50b3BfcHJvZHVjdF9pZCB8fCBudWxsIH0gfSwKICAgIHNjaGVkdWxlRm9sbG93dXA6IHRydWUsCiAgICBjYWNoZUlkOiAkanNvbi5jYWNoZV9pZAogIH0KfV07
+          PARSE_ANSWER_B64: Y29uc3QgYmFzZSA9ICQoJ1Byb2R1Y3QgQ2FjaGUgTUlTUycpLml0ZW0uanNvbjsKbGV0IHJhdyA9IFN0cmluZygkanNvbi50ZXh0IHx8ICRqc29uLm91dHB1dCB8fCAnJykudHJpbSgpLnJlcGxhY2UoL15gYGAoPzpqc29uKT8vaSwgJycpLnJlcGxhY2UoL2BgYCQvLCAnJykudHJpbSgpOwpsZXQgbzsKdHJ5IHsKICBvID0gSlNPTi5wYXJzZShyYXcpOwp9IGNhdGNoIHsKICBvID0geyByZXBseTogcmF3IHx8ICfgpqTgpqXgp43gpq/gpp/gpr8g4Kav4Ka+4Kaa4Ka+4KaHIOCmleCmsOCmviDgpq/gpr7gpprgp43gppvgp4cg4Kao4Ka+4KWkJywgc2VsZWN0ZWRQcm9kdWN0SWQ6ICcnIH07Cn0KCmNvbnN0IHN0cmlwTWVkaWFMaW5rcyA9ICh2YWx1ZSkgPT4gU3RyaW5nKHZhbHVlIHx8ICcnKQogIC5yZXBsYWNlKC9odHRwcz86XC9cLyg/OmRyaXZlXC5nb29nbGVcLmNvbXxbXlxzL10qZ29vZ2xldXNlcmNvbnRlbnRcLmNvbSlcL1teXHNdKy9naSwgJycpCiAgLnJlcGxhY2UoL1xuezMsfS9nLCAnXG5cbicpCiAgLnRyaW0oKTsKCmNvbnN0IHEgPSBTdHJpbmcoYmFzZS5ub3JtYWxpemVkUXVlc3Rpb24gfHwgYmFzZS5tZXNzYWdlIHx8ICcnKS50b0xvd2VyQ2FzZSgpOwpjb25zdCBsaXN0UmVxdWVzdCA9ICEhYmFzZS5pc0xpc3RSZXF1ZXN0IHx8IC9hbGwgcHJvZHVjdHM/fHByb2R1Y3QgbGlzdHxwcm9kdWN0cyBsaXN0fGNhdGFsb2d8c2hvdyBwcm9kdWN0cz98bGlzdCBwcm9kdWN0cz98a2lccypraVxzKig/OnByb2R1Y3RzP3xwcm9kdWN0fHNoYXJpfHNhcmVlfHNhcmkpfGtvblxzKmtvblxzKig/OnNoYXJpfHNhcmVlfHNhcml8cHJvZHVjdHM/KXwoPzpzaGFyaXxzYXJlZXxzYXJpKVxzKig/OmtpXHMqa2l8YWNoZXxhY3l8YXNlKXzgppXgpr9ccyrgppXgpr9ccyooPzrgpqrgp43gprDgp4vgpqHgpr7gppXgp43gpp984Kaq4Kaj4KeN4KavfOCmtuCmvuCmoeCmvOCmv3zgprbgpr7gp5zgpr8pfOCmleCngFxzKuCmleCngFxzKig/OuCmquCnjeCmsOCni+CmoeCmvuCmleCnjeCmn3zgpqrgpqPgp43gpq984Ka24Ka+4Kah4Ka84Ka/fOCmtuCmvuCnnOCmvykvaS50ZXN0KHEpOwpjb25zdCBhbHRlcm5hdGl2ZVJlcXVlc3QgPSAhIWJhc2UuaXNBbHRlcm5hdGl2ZVJlcXVlc3QgfHwgL+CmhuCmsFxzKig/OuCmleCni+CmqHzgppXgp4vgpqjgp4t84KaV4Ka/fOCmleCngCl84KaF4Kao4KeN4KavfOCmhuCmsOCnh+CmlXzgpobgprDgppN84Kas4Ka+4KaV4Ka/fG90aGVyfGFub3RoZXJ8ZWxzZXxkaWZmZXJlbnR8bW9yZS9pLnRlc3QocSk7CmNvbnN0IGFyciA9IEFycmF5LmlzQXJyYXkoYmFzZS5wcm9kdWN0cykgPyBiYXNlLnByb2R1Y3RzIDogW107CmxldCBzZWxlY3RlZCA9IGxpc3RSZXF1ZXN0ID8gJycgOiBTdHJpbmcoby5zZWxlY3RlZFByb2R1Y3RJZCB8fCAnJyk7CmlmIChzZWxlY3RlZCAmJiAhYXJyLnNvbWUocCA9PiBTdHJpbmcocC5pZCkgPT09IHNlbGVjdGVkKSkgc2VsZWN0ZWQgPSAnJzsKaWYgKCFzZWxlY3RlZCAmJiAhbGlzdFJlcXVlc3QgJiYgYXJyLmxlbmd0aCkgc2VsZWN0ZWQgPSBTdHJpbmcoYmFzZS50b3BQcm9kdWN0SWQgfHwgYXJyWzBdLmlkIHx8ICcnKTsKY29uc3QgcHJvZHVjdCA9IHNlbGVjdGVkID8gKGFyci5maW5kKHAgPT4gU3RyaW5nKHAuaWQpID09PSBzZWxlY3RlZCkgfHwge30pIDoge307CmxldCB1cmxzID0gQXJyYXkuaXNBcnJheShwcm9kdWN0Lm1lZGlhX3VybHMpID8gcHJvZHVjdC5tZWRpYV91cmxzIDogW107CmlmICghdXJscy5sZW5ndGggJiYgcHJvZHVjdC5pbWFnZV91cmwpIHVybHMgPSBbcHJvZHVjdC5pbWFnZV91cmxdOwoKcmV0dXJuIFt7CiAganNvbjogewogICAgLi4uYmFzZSwKICAgIHJlcGx5OiBzdHJpcE1lZGlhTGlua3Moby5yZXBseSB8fCAnJyksCiAgICBzZWxlY3RlZFByb2R1Y3RJZDogc2VsZWN0ZWQsCiAgICBwcm9kdWN0SW1hZ2VVcmw6IGxpc3RSZXF1ZXN0ID8gJycgOiAodXJsc1swXSB8fCAnJyksCiAgICBwcm9kdWN0SW1hZ2VVcmxzOiBsaXN0UmVxdWVzdCA/IFtdIDogdXJscy5zbGljZSgwLCA1KSwKICAgIHdhbnRzSW1hZ2U6IGxpc3RSZXF1ZXN0ID8gZmFsc2UgOiAhIWJhc2Uud2FudHNJbWFnZSwKICAgIHN0YXRlOiAnQlJPV1NJTkcnLAogICAgY29udGV4dFBhdGNoOiBzZWxlY3RlZCA/IHsgc2VsZWN0ZWRfcHJvZHVjdDogeyBwcm9kdWN0SWQ6IHNlbGVjdGVkIH0gfSA6IHt9LAogICAgc2NoZWR1bGVGb2xsb3d1cDogISFzZWxlY3RlZCAmJiAhbGlzdFJlcXVlc3QsCiAgICBoYW5kb2ZmOiBmYWxzZSwKICAgIGlzQWx0ZXJuYXRpdmVSZXF1ZXN0OiBhbHRlcm5hdGl2ZVJlcXVlc3QKICB9Cn1dOw==
         run: |
           python3 - <<'PY'
-          import json
+          import base64, json, os
           from pathlib import Path
-
           path = Path('workflows/modular/05_META_MESSAGING_V4_2.json')
           data = json.loads(path.read_text(encoding='utf-8'))
-
-          cache_hit = r'''const q = String($json.base?.normalizedQuestion || $json.base?.message || '').toLowerCase();
-const isListRequest = /all products?|product list|products list|catalog|show products?|list products?|ki\s*ki\s*(?:products?|product|shari|saree|sari)|kon\s*kon\s*(?:shari|saree|sari|products?)|(?:shari|saree|sari)\s*(?:ki\s*ki|ache|acy|ase)|ki\s*(?:shari|saree|sari)\s*(?:ache|acy|ase)|সব\s*(?:প্রোডাক্ট|পণ্য)|প্রোডাক্ট\s*লিস্ট|পণ্যের\s*লিস্ট|কি\s*কি\s*(?:প্রোডাক্ট|পণ্য|শাড়ি|শাড়ি)|কী\s*কী\s*(?:প্রোডাক্ট|পণ্য|শাড়ি|শাড়ি)|কোন\s*কোন\s*(?:শাড়ি|শাড়ি|প্রোডাক্ট|পণ্য)|সবগুলো\s*(?:প্রোডাক্ট|পণ্য)/i.test(q);
-const isAlternativeRequest = /আর\s*(?:কোন|কোনো|কি|কী)|অন্য|আরেক|আরও|বাকি|other|another|else|different|more/i.test(q);
-if (isListRequest || isAlternativeRequest || !$json.cache_reply) return [];
-
-const base = $json.base || {};
-const arr = Array.isArray($json.products) ? $json.products : [];
-const selected = arr.find(p => String(p.id) === String($json.top_product_id)) || arr[0] || {};
-let urls = Array.isArray(selected.media_urls) ? selected.media_urls : [];
-if (!urls.length && selected.image_url) urls = [selected.image_url];
-
-const stripMediaLinks = (value) => String(value || '')
-  .replace(/https?:\/\/(?:drive\.google\.com|[^\s/]*googleusercontent\.com)\/[^\s]+/gi, '')
-  .replace(/\n{3,}/g, '\n\n')
-  .trim();
-
-return [{
-  json: {
-    ...base,
-    reply: stripMediaLinks($json.cache_reply),
-    selectedProductId: $json.top_product_id ? String($json.top_product_id) : '',
-    productImageUrl: urls[0] || '',
-    productImageUrls: urls.slice(0, 5),
-    wantsImage: !!base.wantsImage,
-    state: 'BROWSING',
-    contextPatch: { selected_product: { productId: $json.top_product_id || null } },
-    scheduleFollowup: true,
-    cacheId: $json.cache_id
-  }
-}];'''
-
-          parse_answer = r'''const base = $('Product Cache MISS').item.json;
-let raw = String($json.text || $json.output || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-let o;
-try {
-  o = JSON.parse(raw);
-} catch {
-  o = { reply: raw || 'তথ্যটি যাচাই করা যাচ্ছে না।', selectedProductId: '' };
-}
-
-const stripMediaLinks = (value) => String(value || '')
-  .replace(/https?:\/\/(?:drive\.google\.com|[^\s/]*googleusercontent\.com)\/[^\s]+/gi, '')
-  .replace(/\n{3,}/g, '\n\n')
-  .trim();
-
-const q = String(base.normalizedQuestion || base.message || '').toLowerCase();
-const listRequest = !!base.isListRequest || /all products?|product list|products list|catalog|show products?|list products?|ki\s*ki\s*(?:products?|product|shari|saree|sari)|kon\s*kon\s*(?:shari|saree|sari|products?)|(?:shari|saree|sari)\s*(?:ki\s*ki|ache|acy|ase)|কি\s*কি\s*(?:প্রোডাক্ট|পণ্য|শাড়ি|শাড়ি)|কী\s*কী\s*(?:প্রোডাক্ট|পণ্য|শাড়ি|শাড়ি)/i.test(q);
-const alternativeRequest = !!base.isAlternativeRequest || /আর\s*(?:কোন|কোনো|কি|কী)|অন্য|আরেক|আরও|বাকি|other|another|else|different|more/i.test(q);
-const arr = Array.isArray(base.products) ? base.products : [];
-let selected = listRequest ? '' : String(o.selectedProductId || '');
-if (selected && !arr.some(p => String(p.id) === selected)) selected = '';
-if (!selected && !listRequest && arr.length) selected = String(base.topProductId || arr[0].id || '');
-const product = selected ? (arr.find(p => String(p.id) === selected) || {}) : {};
-let urls = Array.isArray(product.media_urls) ? product.media_urls : [];
-if (!urls.length && product.image_url) urls = [product.image_url];
-
-return [{
-  json: {
-    ...base,
-    reply: stripMediaLinks(o.reply || ''),
-    selectedProductId: selected,
-    productImageUrl: listRequest ? '' : (urls[0] || ''),
-    productImageUrls: listRequest ? [] : urls.slice(0, 5),
-    wantsImage: listRequest ? false : !!base.wantsImage,
-    state: 'BROWSING',
-    contextPatch: selected ? { selected_product: { productId: selected } } : {},
-    scheduleFollowup: !!selected && !listRequest,
-    handoff: false,
-    isAlternativeRequest: alternativeRequest
-  }
-}];'''
-
-          found = set()
+          replacements = {
+              'Product Cache HIT': base64.b64decode(os.environ['CACHE_HIT_B64']).decode('utf-8'),
+              'Parse Product Answer': base64.b64decode(os.environ['PARSE_ANSWER_B64']).decode('utf-8'),
+          }
+          seen = set()
           for node in data.get('nodes', []):
-              name = node.get('name')
-              if name == 'Product Cache HIT':
-                  node.setdefault('parameters', {})['jsCode'] = cache_hit
-                  found.add(name)
-              elif name == 'Parse Product Answer':
-                  node.setdefault('parameters', {})['jsCode'] = parse_answer
-                  found.add(name)
-
-          required = {'Product Cache HIT', 'Parse Product Answer'}
-          missing = required - found
+              if node.get('name') in replacements:
+                  node.setdefault('parameters', {})['jsCode'] = replacements[node['name']]
+                  seen.add(node['name'])
+          missing = set(replacements) - seen
           if missing:
               raise SystemExit(f'Missing nodes: {sorted(missing)}')
-
           path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-          print('Patched:', ', '.join(sorted(found)))
+          print('patched', sorted(seen))
           PY
-
-      - name: Validate patched JavaScript syntax
+      - name: Validate JavaScript syntax
         shell: bash
         run: |
           node <<'NODE'
@@ -125,18 +50,11 @@ return [{
           const wf = JSON.parse(fs.readFileSync('workflows/modular/05_META_MESSAGING_V4_2.json', 'utf8'));
           for (const name of ['Product Cache HIT', 'Parse Product Answer']) {
             const node = wf.nodes.find(n => n.name === name);
-            if (!node) throw new Error(`Missing ${name}`);
-            try {
-              new Function(node.parameters.jsCode);
-            } catch (e) {
-              console.error(`${name} syntax error:`, e.message);
-              process.exit(1);
-            }
+            new Function(node.parameters.jsCode);
             console.log(`${name}: syntax OK`);
           }
           NODE
-
-      - name: Commit patch and remove temporary workflow
+      - name: Commit patch and cleanup
         shell: bash
         run: |
           rm -f .github/workflows/fix-product-cache-hit-syntax.yml
