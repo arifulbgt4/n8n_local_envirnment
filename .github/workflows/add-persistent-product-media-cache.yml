@@ -1,0 +1,531 @@
+name: Add persistent product media cache
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/add-persistent-product-media-cache.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch persistent media cache architecture
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          ROOT = Path('.')
+
+          # ------------------------------------------------------------------
+          # Local media-cache service (no npm dependencies)
+          # ------------------------------------------------------------------
+          service_dir = ROOT / 'services' / 'media-cache'
+          service_dir.mkdir(parents=True, exist_ok=True)
+
+          (service_dir / 'Dockerfile').write_text('''FROM node:20-alpine\nWORKDIR /app\nCOPY server.mjs ./server.mjs\nENV PORT=3001 CACHE_DIR=/data/product-media MAX_IMAGE_BYTES=26214400 GRAPH_VERSION=v26.0\nEXPOSE 3001\nCMD ["node", "server.mjs"]\n''', encoding='utf-8')
+
+          (service_dir / 'server.mjs').write_text(r'''import http from 'node:http';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+
+const PORT = Number(process.env.PORT || 3001);
+const CACHE_DIR = process.env.CACHE_DIR || '/data/product-media';
+const MAX_IMAGE_BYTES = Number(process.env.MAX_IMAGE_BYTES || 25 * 1024 * 1024);
+const DEFAULT_GRAPH_VERSION = process.env.GRAPH_VERSION || 'v26.0';
+
+await fs.mkdir(CACHE_DIR, { recursive: true });
+
+function json(res, status, body) {
+  const payload = Buffer.from(JSON.stringify(body));
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': payload.length,
+    'cache-control': 'no-store',
+  });
+  res.end(payload);
+}
+
+async function readBody(req) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > 1024 * 1024) throw new Error('request body too large');
+    chunks.push(chunk);
+  }
+  if (!chunks.length) return {};
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+function safeKey(value) {
+  const raw = String(value || 'media').trim();
+  const cleaned = raw.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 140) || 'media';
+  return cleaned;
+}
+
+function normalizeDriveUrl(input) {
+  const source = String(input || '').trim();
+  try {
+    const u = new URL(source);
+    if (u.hostname === 'drive.google.com') {
+      let id = u.searchParams.get('id');
+      if (!id) {
+        const m = u.pathname.match(/\/file\/d\/([^/]+)/);
+        if (m) id = m[1];
+      }
+      if (id) return `https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download&confirm=t`;
+    }
+  } catch {}
+  return source;
+}
+
+async function fileExists(file) {
+  try { await fs.access(file); return true; } catch { return false; }
+}
+
+async function loadMeta(metaPath) {
+  try { return JSON.parse(await fs.readFile(metaPath, 'utf8')); } catch { return null; }
+}
+
+async function cacheImage(sourceUrl, cacheKey) {
+  if (!/^https?:\/\//i.test(String(sourceUrl || ''))) throw new Error('sourceUrl must be http/https');
+  const key = safeKey(cacheKey || crypto.createHash('sha256').update(String(sourceUrl)).digest('hex').slice(0, 32));
+  const filePath = path.join(CACHE_DIR, `${key}.bin`);
+  const metaPath = path.join(CACHE_DIR, `${key}.json`);
+  const old = await loadMeta(metaPath);
+
+  if (old && old.sourceUrl === sourceUrl && await fileExists(filePath)) {
+    const stat = await fs.stat(filePath);
+    return {
+      cacheKey: key,
+      localPath: filePath,
+      mimeType: old.mimeType || 'application/octet-stream',
+      fileSize: stat.size,
+      reusedLocalFile: true,
+    };
+  }
+
+  const fetchUrl = normalizeDriveUrl(sourceUrl);
+  const response = await fetch(fetchUrl, { redirect: 'follow' });
+  if (!response.ok) throw new Error(`source image download failed (${response.status})`);
+  const mimeType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  if (!mimeType.startsWith('image/')) throw new Error(`source did not return an image (${mimeType || 'unknown content-type'})`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length) throw new Error('source image is empty');
+  if (bytes.length > MAX_IMAGE_BYTES) throw new Error(`image exceeds ${MAX_IMAGE_BYTES} bytes`);
+
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeFile(tmp, bytes);
+  await fs.rename(tmp, filePath);
+  const meta = {
+    sourceUrl,
+    normalizedSourceUrl: fetchUrl,
+    mimeType,
+    fileSize: bytes.length,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    cachedAt: new Date().toISOString(),
+  };
+  await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
+  return { cacheKey: key, localPath: filePath, mimeType, fileSize: bytes.length, reusedLocalFile: false };
+}
+
+async function graphJson(url, accessToken, body) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  if (!response.ok || data?.error) {
+    const msg = data?.error?.message || `Meta request failed (${response.status})`;
+    const err = new Error(msg);
+    err.meta = data?.error || data;
+    throw err;
+  }
+  return data;
+}
+
+async function sendAttachmentId({ accessToken, recipientId, attachmentId, graphVersion }) {
+  const url = `https://graph.facebook.com/${graphVersion}/me/messages`;
+  return graphJson(url, accessToken, {
+    recipient: { id: String(recipientId) },
+    messaging_type: 'RESPONSE',
+    message: { attachment: { type: 'image', payload: { attachment_id: String(attachmentId) } } },
+  });
+}
+
+async function uploadReusableAttachment({ accessToken, localPath, mimeType, graphVersion }) {
+  const bytes = await fs.readFile(localPath);
+  const form = new FormData();
+  form.append('message', JSON.stringify({ attachment: { type: 'image', payload: { is_reusable: true } } }));
+  form.append('filedata', new Blob([bytes], { type: mimeType || 'image/jpeg' }), path.basename(localPath));
+  const response = await fetch(`https://graph.facebook.com/${graphVersion}/me/message_attachments`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${accessToken}` },
+    body: form,
+  });
+  const text = await response.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  if (!response.ok || data?.error || !data?.attachment_id) {
+    const msg = data?.error?.message || `Meta attachment upload failed (${response.status})`;
+    throw new Error(msg);
+  }
+  return String(data.attachment_id);
+}
+
+async function handleFacebookSend(body) {
+  const accessToken = String(body.accessToken || '');
+  const recipientId = String(body.recipientId || '');
+  const sourceUrl = String(body.sourceUrl || '');
+  const graphVersion = String(body.graphVersion || DEFAULT_GRAPH_VERSION).replace(/^\/+/, '');
+  let attachmentId = String(body.attachmentId || '');
+  if (!accessToken || !recipientId) throw new Error('accessToken and recipientId are required');
+
+  // Fast path: reuse Meta attachment ID without touching Google Drive/local disk.
+  if (attachmentId) {
+    try {
+      const sent = await sendAttachmentId({ accessToken, recipientId, attachmentId, graphVersion });
+      return {
+        ok: true,
+        messageId: String(sent.message_id || ''),
+        attachmentId,
+        reusedAttachment: true,
+        reusedLocalFile: true,
+        cacheKey: String(body.cacheKey || ''),
+        localPath: String(body.localPath || ''),
+        mimeType: String(body.mimeType || ''),
+        fileSize: Number(body.fileSize || 0),
+      };
+    } catch {
+      // Attachment may have expired/become invalid. Rebuild from persistent local/source cache.
+      attachmentId = '';
+    }
+  }
+
+  if (!sourceUrl) throw new Error('sourceUrl is required when no reusable attachmentId is available');
+  const cached = await cacheImage(sourceUrl, body.cacheKey);
+  attachmentId = await uploadReusableAttachment({
+    accessToken,
+    localPath: cached.localPath,
+    mimeType: cached.mimeType,
+    graphVersion,
+  });
+  const sent = await sendAttachmentId({ accessToken, recipientId, attachmentId, graphVersion });
+  return {
+    ok: true,
+    messageId: String(sent.message_id || ''),
+    attachmentId,
+    reusedAttachment: false,
+    ...cached,
+  };
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    if (req.method === 'GET' && url.pathname === '/health') {
+      return json(res, 200, { ok: true, service: 'product-media-cache' });
+    }
+    if (req.method === 'POST' && url.pathname === '/v1/cache') {
+      const body = await readBody(req);
+      const result = await cacheImage(String(body.sourceUrl || ''), String(body.cacheKey || ''));
+      return json(res, 200, { ok: true, ...result });
+    }
+    if (req.method === 'POST' && url.pathname === '/v1/facebook/send-image') {
+      const body = await readBody(req);
+      const result = await handleFacebookSend(body);
+      return json(res, 200, result);
+    }
+    return json(res, 404, { ok: false, error: 'not found' });
+  } catch (error) {
+    return json(res, 502, { ok: false, error: String(error?.message || error) });
+  }
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`product-media-cache listening on :${PORT}`);
+});
+''', encoding='utf-8')
+
+          # ------------------------------------------------------------------
+          # docker-compose: persistent media cache service + named volume
+          # ------------------------------------------------------------------
+          compose_path = ROOT / 'docker-compose.yml'
+          compose = compose_path.read_text(encoding='utf-8')
+          if '\n  media-cache:\n' not in compose:
+            media_service = '''\n  media-cache:\n    build:\n      context: ./services/media-cache\n    container_name: n8n-media-cache\n    restart: unless-stopped\n    environment:\n      PORT: 3001\n      CACHE_DIR: /data/product-media\n      MAX_IMAGE_BYTES: ${PRODUCT_MEDIA_CACHE_MAX_BYTES:-26214400}\n      GRAPH_VERSION: v26.0\n      TZ: ${TZ}\n    ports:\n      - "127.0.0.1:3001:3001"\n    volumes:\n      - product_media_cache:/data/product-media\n    healthcheck:\n      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]\n      interval: 10s\n      timeout: 5s\n      retries: 10\n\n'''
+            compose = compose.replace('\n  n8n:\n', media_service + '  n8n:\n')
+          if '      media-cache:\n        condition: service_healthy\n' not in compose:
+            compose = compose.replace('    depends_on:\n      postgres:\n        condition: service_healthy\n', '    depends_on:\n      postgres:\n        condition: service_healthy\n      media-cache:\n        condition: service_healthy\n')
+          if '  product_media_cache:\n' not in compose:
+            compose = compose.rstrip() + '\n  product_media_cache:\n    name: n8n_product_media_cache\n'
+          compose_path.write_text(compose, encoding='utf-8')
+
+          env_path = ROOT / '.env.example'
+          if env_path.exists():
+            env = env_path.read_text(encoding='utf-8')
+            if 'PRODUCT_MEDIA_CACHE_MAX_BYTES=' not in env:
+              env = env.rstrip() + '\n\n# Persistent local product image cache (25 MiB per image by default)\nPRODUCT_MEDIA_CACHE_MAX_BYTES=26214400\n'
+              env_path.write_text(env, encoding='utf-8')
+
+          # ------------------------------------------------------------------
+          # PostgreSQL schema + invalidation trigger
+          # ------------------------------------------------------------------
+          media_columns = '''  cache_key TEXT,\n  content_hash TEXT,\n  local_path TEXT,\n  mime_type TEXT,\n  file_size BIGINT,\n  facebook_attachment_id TEXT,\n  instagram_attachment_id TEXT,\n  cached_at TIMESTAMPTZ,\n  attachment_updated_at TIMESTAMPTZ,\n'''
+          migration_sql = r'''
+
+-- Persistent local/Meta product media cache
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS cache_key TEXT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS local_path TEXT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS mime_type TEXT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS file_size BIGINT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS facebook_attachment_id TEXT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS instagram_attachment_id TEXT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS cached_at TIMESTAMPTZ;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS attachment_updated_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_product_media_facebook_attachment ON product_media(facebook_attachment_id) WHERE facebook_attachment_id IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION invalidate_product_media_cache_on_source_change()
+RETURNS trigger AS $$
+BEGIN
+  IF NEW.resolved_url IS DISTINCT FROM OLD.resolved_url
+     OR NEW.source_ref IS DISTINCT FROM OLD.source_ref THEN
+    NEW.cache_key := NULL;
+    NEW.content_hash := NULL;
+    NEW.local_path := NULL;
+    NEW.mime_type := NULL;
+    NEW.file_size := NULL;
+    NEW.facebook_attachment_id := NULL;
+    NEW.instagram_attachment_id := NULL;
+    NEW.cached_at := NULL;
+    NEW.attachment_updated_at := NULL;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_product_media_cache_invalidate ON product_media;
+CREATE TRIGGER trg_product_media_cache_invalidate
+BEFORE UPDATE OF source_ref,resolved_url ON product_media
+FOR EACH ROW EXECUTE FUNCTION invalidate_product_media_cache_on_source_change();
+'''
+
+          def patch_sql_file(path):
+            if not path.exists(): return
+            text = path.read_text(encoding='utf-8')
+            if 'facebook_attachment_id TEXT' not in text:
+              text = text.replace('  resolved_url TEXT NOT NULL,\n  sort_order INTEGER NOT NULL DEFAULT 0,', '  resolved_url TEXT NOT NULL,\n' + media_columns + '  sort_order INTEGER NOT NULL DEFAULT 0,')
+            if 'invalidate_product_media_cache_on_source_change' not in text:
+              marker = 'CREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_id, sort_order) WHERE active=TRUE;'
+              if marker in text:
+                text = text.replace(marker, marker + migration_sql)
+              else:
+                text = text.rstrip() + migration_sql + '\n'
+            path.write_text(text, encoding='utf-8')
+
+          for rel in ['init-db/001-init.sql', 'docs/DATABASE_SCHEMA.sql', 'docs/RESET_APPLICATION_DATABASE.sql']:
+            patch_sql_file(ROOT / rel)
+
+          # Setup workflow migration for existing persistent DBs.
+          setup_path = ROOT / 'workflows/modular/01_SETUP_CONFIG_V4_2.json'
+          setup = json.loads(setup_path.read_text(encoding='utf-8'))
+          setup_node = next((n for n in setup.get('nodes', []) if 'Apply / Migrate Database Schema' in n.get('name','')), None)
+          if not setup_node:
+            raise SystemExit('Setup migration node not found')
+          query = setup_node.setdefault('parameters', {}).get('query', '')
+          if 'facebook_attachment_id' not in query:
+            setup_node['parameters']['query'] = query.rstrip() + migration_sql
+          setup_path.write_text(json.dumps(setup, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          # ------------------------------------------------------------------
+          # Catalog sync: pre-warm local image bytes after every product upsert.
+          # ------------------------------------------------------------------
+          catalog_path = ROOT / 'workflows/modular/02_CATALOG_SYNC_V4_2.json'
+          catalog = json.loads(catalog_path.read_text(encoding='utf-8'))
+
+          def upsert_node(data, node):
+            for i,n in enumerate(data['nodes']):
+              if n.get('name') == node['name']:
+                data['nodes'][i] = node
+                return
+            data['nodes'].append(node)
+
+          warm_expand = {
+            'parameters': {
+              'jsCode': "const out=[];for(const item of $input.all()){const j=item.json||{};const b=j.base||{};const media=Array.isArray(b.media)?b.media:[];for(const m of media){const url=String(m?.resolvedUrl||'').trim();if(!url)continue;const mediaKey=String(m?.key||`image-${Number(m?.sortOrder||1)}`);out.push({json:{productId:String(j.product_id||''),accountId:String(b.accountId||''),mediaKey,sourceUrl:url,cacheKey:`acct-${b.accountId}-prod-${j.product_id}-${mediaKey}`}});}}return out;"
+            },
+            'type': 'n8n-nodes-base.code', 'typeVersion': 2,
+            'position': [-400, 1260], 'id': 'd6f47db5-4146-4650-b4e4-10425570e74a',
+            'name': 'Expand Product Media Cache Warmup'
+          }
+          warm_http = {
+            'parameters': {
+              'method': 'POST', 'url': 'http://media-cache:3001/v1/cache',
+              'sendBody': True, 'contentType': 'raw', 'rawContentType': 'application/json',
+              'body': "={{ JSON.stringify({sourceUrl:$json.sourceUrl,cacheKey:$json.cacheKey}) }}",
+              'options': {'timeout': 20000}
+            },
+            'type': 'n8n-nodes-base.httpRequest', 'typeVersion': 4.2,
+            'position': [-160, 1260], 'id': '095ddb06-3d3d-45c4-bb05-01c1431c5817',
+            'name': 'Warm Local Product Media Cache', 'continueOnFail': True
+          }
+          upsert_node(catalog, warm_expand); upsert_node(catalog, warm_http)
+          con = catalog.setdefault('connections', {})
+          con.setdefault('Upsert Product Cache', {'main':[[]]})
+          con['Upsert Product Cache'].setdefault('main',[[]])
+          if not con['Upsert Product Cache']['main']: con['Upsert Product Cache']['main']=[[]]
+          edge={'node':'Expand Product Media Cache Warmup','type':'main','index':0}
+          if edge not in con['Upsert Product Cache']['main'][0]: con['Upsert Product Cache']['main'][0].append(edge)
+          con['Expand Product Media Cache Warmup']={'main':[[{'node':'Warm Local Product Media Cache','type':'main','index':0}]]}
+          catalog_path.write_text(json.dumps(catalog, ensure_ascii=False, separators=(',', ':')) + '\n', encoding='utf-8')
+
+          # ------------------------------------------------------------------
+          # Meta messaging: local persistent cache + reusable Facebook attachment IDs.
+          # ------------------------------------------------------------------
+          meta_path = ROOT / 'workflows/modular/05_META_MESSAGING_V4_2.json'
+          meta = json.loads(meta_path.read_text(encoding='utf-8'))
+
+          only = next((n for n in meta['nodes'] if n.get('name')=='Only Product Image Request'), None)
+          if not only: raise SystemExit('Only Product Image Request node missing')
+          only['parameters']['jsCode'] = "const out=[];for(const item of $input.all()){const j=item.json||{};if(!j.wantsImage)continue;let urls=Array.isArray(j.productImageUrls)?j.productImageUrls.filter(Boolean):[];if(!urls.length&&j.productImageUrl)urls=[j.productImageUrl];urls=[...new Set(urls)].slice(0,5);urls.forEach((url,i)=>out.push({json:{...j,productImageUrl:String(url),mediaSortOrder:i+1}}));}return out;"
+
+          load_media = {
+            'parameters': {
+              'operation':'executeQuery',
+              'query': "WITH input AS (SELECT $4::jsonb AS base), pm AS (SELECT * FROM product_media WHERE product_id=NULLIF($1,'')::bigint AND active=TRUE AND (sort_order=$2::int OR resolved_url=$3) ORDER BY CASE WHEN resolved_url=$3 THEN 0 ELSE 1 END,sort_order LIMIT 1) SELECT input.base,pm.id::text AS media_row_id,pm.media_key,pm.resolved_url,COALESCE(pm.cache_key,'') AS cache_key,COALESCE(pm.local_path,'') AS local_path,COALESCE(pm.mime_type,'') AS mime_type,COALESCE(pm.file_size,0)::text AS file_size,COALESCE(pm.facebook_attachment_id,'') AS facebook_attachment_id FROM input LEFT JOIN pm ON TRUE;",
+              'options': {'queryReplacement': "={{ [$json.selectedProductId,$json.mediaSortOrder,$json.productImageUrl,JSON.stringify($json)] }}"}
+            },
+            'type':'n8n-nodes-base.postgres','typeVersion':2.6,
+            'position':[5200,-40],'id':'21f7a5cb-9fa9-453e-884e-35006be024fd','name':'Load Product Media Send Cache'
+          }
+          flatten = {
+            'parameters': {
+              'jsCode': "const b=$json.base||{};const mediaKey=String($json.media_key||`image-${Number(b.mediaSortOrder||1)}`);const cacheKey=String($json.cache_key||`acct-${b.accountId}-prod-${b.selectedProductId}-${mediaKey}`);return [{json:{...b,mediaRowId:String($json.media_row_id||''),mediaKey,resolvedUrl:String($json.resolved_url||b.productImageUrl||''),cacheKey,localPath:String($json.local_path||''),mimeType:String($json.mime_type||''),fileSize:Number($json.file_size||0),facebookAttachmentId:String($json.facebook_attachment_id||'')}}];"
+            },
+            'type':'n8n-nodes-base.code','typeVersion':2,'position':[5440,-40],'id':'9b089f90-3c84-4315-938b-b683b6722f99','name':'Flatten Product Media Send Cache'
+          }
+          route_fb = {
+            'parameters': {'jsCode': "return $input.all().filter(i=>String(i.json.platform||'').toLowerCase()==='facebook');"},
+            'type':'n8n-nodes-base.code','typeVersion':2,'position':[5680,-120],'id':'ac3d3a8a-10b1-4c3b-93af-d06ef5b96ea0','name':'Route Facebook Product Image Cache'
+          }
+          route_other = {
+            'parameters': {'jsCode': "return $input.all().filter(i=>String(i.json.platform||'').toLowerCase()!=='facebook');"},
+            'type':'n8n-nodes-base.code','typeVersion':2,'position':[5680,80],'id':'8a12a054-c344-457e-86b9-76e854c8a256','name':'Route Other Product Image'
+          }
+          send_cached = {
+            'parameters': {
+              'method':'POST','url':'http://media-cache:3001/v1/facebook/send-image',
+              'sendBody':True,'contentType':'raw','rawContentType':'application/json',
+              'body': "={{ JSON.stringify({accessToken:$json.accessToken,recipientId:$json.senderId,sourceUrl:$json.resolvedUrl||$json.productImageUrl,cacheKey:$json.cacheKey,attachmentId:$json.facebookAttachmentId||'',localPath:$json.localPath||'',mimeType:$json.mimeType||'',fileSize:$json.fileSize||0,graphVersion:'v26.0'}) }}",
+              'options': {'timeout':30000}
+            },
+            'type':'n8n-nodes-base.httpRequest','typeVersion':4.2,'position':[5920,-120],'id':'b524e76e-8021-44d0-b875-1fc584f8a19a','name':'Send Facebook Product Image Cached'
+          }
+          persist = {
+            'parameters': {
+              'operation':'executeQuery',
+              'query': "WITH upd AS (UPDATE product_media SET cache_key=COALESCE(NULLIF($2,''),cache_key),local_path=COALESCE(NULLIF($3,''),local_path),mime_type=COALESCE(NULLIF($4,''),mime_type),file_size=CASE WHEN $5::bigint>0 THEN $5::bigint ELSE file_size END,facebook_attachment_id=COALESCE(NULLIF($6,''),facebook_attachment_id),cached_at=CASE WHEN COALESCE(NULLIF($3,''),local_path) IS NOT NULL THEN NOW() ELSE cached_at END,attachment_updated_at=CASE WHEN NULLIF($6,'') IS NOT NULL THEN NOW() ELSE attachment_updated_at END,updated_at=NOW() WHERE id=NULLIF($1,'')::bigint RETURNING id), bot AS (INSERT INTO bot_outbound_messages(platform,external_account_id,customer_external_id,message_id) SELECT 'facebook',$7,$8,$9 WHERE COALESCE($9,'')<>'' ON CONFLICT(message_id) DO NOTHING RETURNING id) SELECT $9::text AS message_id,EXISTS(SELECT 1 FROM upd) AS media_cache_saved,EXISTS(SELECT 1 FROM bot) AS bot_message_saved;",
+              'options': {'queryReplacement': "={{ [$('Flatten Product Media Send Cache').item.json.mediaRowId,$json.cacheKey||$('Flatten Product Media Send Cache').item.json.cacheKey,$json.localPath||$('Flatten Product Media Send Cache').item.json.localPath,$json.mimeType||$('Flatten Product Media Send Cache').item.json.mimeType,$json.fileSize||$('Flatten Product Media Send Cache').item.json.fileSize,$json.attachmentId||'',$('Flatten Product Media Send Cache').item.json.externalAccountId,$('Flatten Product Media Send Cache').item.json.senderId,$json.messageId||''] }}"}
+            },
+            'type':'n8n-nodes-base.postgres','typeVersion':2.6,'position':[6160,-120],'id':'22d1e361-a903-460a-8217-b44907a54b08','name':'Persist Facebook Product Image Cache'
+          }
+          for n in [load_media,flatten,route_fb,route_other,send_cached,persist]: upsert_node(meta,n)
+
+          # Remove obsolete Facebook binary-routing nodes from the canvas.
+          obsolete={'Route Meta Product Image','Route WhatsApp Product Image','Download Product Image Binary','Send Meta Product Image Binary'}
+          meta['nodes']=[n for n in meta['nodes'] if n.get('name') not in obsolete]
+          mcon=meta.setdefault('connections',{})
+          for name in list(mcon):
+            if name in obsolete: mcon.pop(name,None)
+          for name, spec in mcon.items():
+            for outputs in spec.get('main',[]):
+              outputs[:] = [e for e in outputs if e.get('node') not in obsolete]
+
+          mcon['Only Product Image Request']={'main':[[{'node':'Load Product Media Send Cache','type':'main','index':0}]]}
+          mcon['Load Product Media Send Cache']={'main':[[{'node':'Flatten Product Media Send Cache','type':'main','index':0}]]}
+          mcon['Flatten Product Media Send Cache']={'main':[[{'node':'Route Facebook Product Image Cache','type':'main','index':0},{'node':'Route Other Product Image','type':'main','index':0}]]}
+          mcon['Route Facebook Product Image Cache']={'main':[[{'node':'Send Facebook Product Image Cached','type':'main','index':0}]]}
+          mcon['Send Facebook Product Image Cached']={'main':[[{'node':'Persist Facebook Product Image Cache','type':'main','index':0}]]}
+          mcon['Route Other Product Image']={'main':[[{'node':'Send Verified Product Image','type':'main','index':0}]]}
+          meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          # ------------------------------------------------------------------
+          # Documentation
+          # ------------------------------------------------------------------
+          doc_path = ROOT / 'docs' / 'PRODUCT_CATALOG.md'
+          if doc_path.exists():
+            doc=doc_path.read_text(encoding='utf-8')
+            marker='## Persistent local product media cache'
+            if marker not in doc:
+              doc += r'''
+
+## Persistent local product media cache
+
+Product images are pre-warmed by catalog sync into the Docker named volume `n8n_product_media_cache` through the internal `media-cache` service. The image bytes therefore survive normal `docker compose down` / `up` cycles as long as volumes are not deleted.
+
+For Facebook, the first successful send creates a reusable Meta `attachment_id`. `product_media.facebook_attachment_id` stores it. Later requests use that ID directly, avoiding Google Drive downloads and repeated binary uploads. If Meta rejects a cached attachment ID, the media-cache service automatically falls back to the persistent local file/source URL, uploads a fresh reusable attachment, sends it, and returns the new ID for PostgreSQL persistence.
+
+Do not run `docker compose down -v` during normal restarts; that deletes persistent volumes including the product media cache.
+'''
+              doc_path.write_text(doc, encoding='utf-8')
+
+          print('Persistent product media cache patch applied')
+          PY
+
+      - name: Validate patched files
+        shell: bash
+        run: |
+          node --check services/media-cache/server.mjs
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          files=[
+            'workflows/modular/01_SETUP_CONFIG_V4_2.json',
+            'workflows/modular/02_CATALOG_SYNC_V4_2.json',
+            'workflows/modular/05_META_MESSAGING_V4_2.json',
+          ]
+          for f in files:
+            data=json.loads(Path(f).read_text(encoding='utf-8'))
+            names={n.get('name') for n in data.get('nodes',[])}
+            for src,spec in data.get('connections',{}).items():
+              if src not in names: raise SystemExit(f'{f}: connection source missing: {src}')
+              for outputs in spec.get('main',[]):
+                for e in outputs:
+                  if e.get('node') not in names: raise SystemExit(f'{f}: connection target missing: {e.get("node")}')
+            print(f, 'JSON/connections OK', len(names), 'nodes')
+          meta=json.loads(Path('workflows/modular/05_META_MESSAGING_V4_2.json').read_text(encoding='utf-8'))
+          required={'Load Product Media Send Cache','Flatten Product Media Send Cache','Route Facebook Product Image Cache','Send Facebook Product Image Cached','Persist Facebook Product Image Cache'}
+          missing=required-{n.get('name') for n in meta['nodes']}
+          if missing: raise SystemExit(f'missing Meta nodes: {sorted(missing)}')
+          print('Meta persistent image path OK')
+          PY
+          docker compose config >/dev/null
+
+      - name: Commit patch and remove temporary workflow
+        shell: bash
+        run: |
+          rm -f .github/workflows/add-persistent-product-media-cache.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Add persistent local product media cache and reusable Facebook images'
+          git push origin master
