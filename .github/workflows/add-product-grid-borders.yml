@@ -14,80 +14,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: master
           fetch-depth: 0
 
-      - name: Patch Apps Script formatting
+      - name: Patch product sheet borders
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           p = Path('integrations/google-apps-script/PRODUCT_IMAGE_SYNC.gs')
           s = p.read_text()
 
-          s = s.replace(
-              "const SCRIPT_VERSION = '4.2-products-v4-safe-recovery';",
-              "const SCRIPT_VERSION = '4.2-products-v5-grid-borders';"
+          s = re.sub(
+              r"const SCRIPT_VERSION = '.*?';",
+              "const SCRIPT_VERSION = '4.2-products-v5-grid-borders';",
+              s,
+              count=1,
           )
 
-          old = """  range
-    .setBackground('#ffffff')
-    .setFontColor('#202124')
-    .setFontFamily('Arial')
-    .setFontSize(10)
-    .setVerticalAlignment('middle')
-    .setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
+          needle = """  const header = sh.getRange(1, 1, 1, visibleCount);"""
+          insert = """  // Permanent light grid borders for merchant-facing rows and columns.\n  range.setBorder(\n    true, true, true, true, true, true,\n    '#dadce0',\n    SpreadsheetApp.BorderStyle.SOLID\n  );\n  try { sh.setHiddenGridlines(false); } catch (_) {}\n\n  const header = sh.getRange(1, 1, 1, visibleCount);"""
+          if "range.setBorder(\n    true, true, true, true, true, true," not in s:
+              if needle not in s:
+                  raise SystemExit('formatProductsSheet_ header anchor not found')
+              s = s.replace(needle, insert, 1)
 
-  const header = sh.getRange(1, 1, 1, visibleCount);"""
-
-          new = """  range
-    .setBackground('#ffffff')
-    .setFontColor('#202124')
-    .setFontFamily('Arial')
-    .setFontSize(10)
-    .setVerticalAlignment('middle')
-    .setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
-
-  // Keep the clean white layout, but draw permanent light grid borders so
-  // row/column boundaries remain visible after every scheduled rebuild.
-  range.setBorder(
-    true, true, true, true, true, true,
-    '#dadce0',
-    SpreadsheetApp.BorderStyle.SOLID
-  );
-  try { sh.setHiddenGridlines(false); } catch (_) {}
-
-  const header = sh.getRange(1, 1, 1, visibleCount);"""
-
-          if old not in s:
-              raise SystemExit('Expected formatProductsSheet_ block not found; refusing unsafe patch')
-          s = s.replace(old, new, 1)
-
-          old_header = """    .setHorizontalAlignment('center')
-    .setVerticalAlignment('middle')
-    .setBorder(false, false, true, false, false, false, '#9aa0a6', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);"""
-
-          new_header = """    .setHorizontalAlignment('center')
-    .setVerticalAlignment('middle')
-    .setBorder(true, true, true, true, true, true, '#dadce0', SpreadsheetApp.BorderStyle.SOLID)
-    .setBorder(null, null, true, null, null, null, '#9aa0a6', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);"""
-
-          if old_header not in s:
-              raise SystemExit('Expected header border block not found; refusing unsafe patch')
-          s = s.replace(old_header, new_header, 1)
+          old = ".setBorder(false, false, true, false, false, false, '#9aa0a6', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);"
+          new = ".setBorder(true, true, true, true, true, true, '#dadce0', SpreadsheetApp.BorderStyle.SOLID)\n    .setBorder(null, null, true, null, null, null, '#9aa0a6', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);"
+          if old in s:
+              s = s.replace(old, new, 1)
 
           p.write_text(s)
           PY
 
-      - name: Validate patch
+      - name: Validate
         shell: bash
         run: |
           grep -q "4.2-products-v5-grid-borders" integrations/google-apps-script/PRODUCT_IMAGE_SYNC.gs
-          grep -q "#dadce0" integrations/google-apps-script/PRODUCT_IMAGE_SYNC.gs
           grep -q "setHiddenGridlines(false)" integrations/google-apps-script/PRODUCT_IMAGE_SYNC.gs
+          grep -q "#dadce0" integrations/google-apps-script/PRODUCT_IMAGE_SYNC.gs
 
-      - name: Commit patch and remove one-time workflow
+      - name: Commit patch
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
