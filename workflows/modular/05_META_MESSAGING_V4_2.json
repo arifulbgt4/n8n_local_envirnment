@@ -1095,7 +1095,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const out=[];for(const i of $input.all()){const j=i.json;if(j.intent!=='PRODUCT_SEARCH'||!j.wantsImage||j.handoff)continue;let urls=Array.isArray(j.productImageUrls)?j.productImageUrls:[];if(!urls.length&&j.productImageUrl)urls=[j.productImageUrl];for(const url of [...new Set(urls.filter(Boolean))].slice(0,5))out.push({json:{...j,productImageUrl:url}});}return out;"
+        "jsCode": "const out=[];for(const item of $input.all()){const j=item.json||{};if(!j.wantsImage)continue;let urls=Array.isArray(j.productImageUrls)?j.productImageUrls.filter(Boolean):[];if(!urls.length&&j.productImageUrl)urls=[j.productImageUrl];urls=[...new Set(urls)].slice(0,5);urls.forEach((url,i)=>out.push({json:{...j,productImageUrl:String(url),mediaSortOrder:i+1}}));}return out;"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -1913,101 +1913,97 @@
     },
     {
       "parameters": {
-        "jsCode": "return $input.all().filter(i => ['facebook','instagram'].includes(String(i.json.platform||'').toLowerCase()));"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        5200,
-        -80
-      ],
-      "id": "cc1e7f82-3f79-4f88-8d76-c1311488f2d0",
-      "name": "Route Meta Product Image"
-    },
-    {
-      "parameters": {
-        "jsCode": "return $input.all().filter(i => String(i.json.platform||'').toLowerCase()==='whatsapp');"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        5200,
-        120
-      ],
-      "id": "18d5054f-acde-4f79-9ea7-77f0863050db",
-      "name": "Route WhatsApp Product Image"
-    },
-    {
-      "parameters": {
-        "url": "={{ $json.productImageUrl }}",
+        "operation": "executeQuery",
+        "query": "WITH input AS (SELECT $4::jsonb AS base), pm AS (SELECT * FROM product_media WHERE product_id=NULLIF($1,'')::bigint AND active=TRUE AND (sort_order=$2::int OR resolved_url=$3) ORDER BY CASE WHEN resolved_url=$3 THEN 0 ELSE 1 END,sort_order LIMIT 1) SELECT input.base,pm.id::text AS media_row_id,pm.media_key,pm.resolved_url,COALESCE(pm.cache_key,'') AS cache_key,COALESCE(pm.local_path,'') AS local_path,COALESCE(pm.mime_type,'') AS mime_type,COALESCE(pm.file_size,0)::text AS file_size,COALESCE(pm.facebook_attachment_id,'') AS facebook_attachment_id FROM input LEFT JOIN pm ON TRUE;",
         "options": {
-          "response": {
-            "response": {
-              "responseFormat": "file",
-              "outputPropertyName": "data"
-            }
-          }
+          "queryReplacement": "={{ [$json.selectedProductId,$json.mediaSortOrder,$json.productImageUrl,JSON.stringify($json)] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        5200,
+        -40
+      ],
+      "id": "21f7a5cb-9fa9-453e-884e-35006be024fd",
+      "name": "Load Product Media Send Cache"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b=$json.base||{};const mediaKey=String($json.media_key||`image-${Number(b.mediaSortOrder||1)}`);const cacheKey=String($json.cache_key||`acct-${b.accountId}-prod-${b.selectedProductId}-${mediaKey}`);return [{json:{...b,mediaRowId:String($json.media_row_id||''),mediaKey,resolvedUrl:String($json.resolved_url||b.productImageUrl||''),cacheKey,localPath:String($json.local_path||''),mimeType:String($json.mime_type||''),fileSize:Number($json.file_size||0),facebookAttachmentId:String($json.facebook_attachment_id||'')}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5440,
+        -40
+      ],
+      "id": "9b089f90-3c84-4315-938b-b683b6722f99",
+      "name": "Flatten Product Media Send Cache"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().filter(i=>String(i.json.platform||'').toLowerCase()==='facebook');"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5680,
+        -120
+      ],
+      "id": "ac3d3a8a-10b1-4c3b-93af-d06ef5b96ea0",
+      "name": "Route Facebook Product Image Cache"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().filter(i=>String(i.json.platform||'').toLowerCase()!=='facebook');"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5680,
+        80
+      ],
+      "id": "8a12a054-c344-457e-86b9-76e854c8a256",
+      "name": "Route Other Product Image"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://media-cache:3001/v1/facebook/send-image",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({accessToken:$json.accessToken,recipientId:$json.senderId,sourceUrl:$json.resolvedUrl||$json.productImageUrl,cacheKey:$json.cacheKey,attachmentId:$json.facebookAttachmentId||'',localPath:$json.localPath||'',mimeType:$json.mimeType||'',fileSize:$json.fileSize||0,graphVersion:'v26.0'}) }}",
+        "options": {
+          "timeout": 30000
         }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        5440,
-        -80
+        5920,
+        -120
       ],
-      "id": "857a3ed0-9333-4a37-b4d2-b2da2886d41c",
-      "name": "Download Product Image Binary"
+      "id": "b524e76e-8021-44d0-b875-1fc584f8a19a",
+      "name": "Send Facebook Product Image Cached"
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ $('Route Meta Product Image').item.json.replyUrl }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $('Route Meta Product Image').item.json.accessToken }}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "contentType": "multipart-form-data",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "parameterType": "formData",
-              "name": "recipient",
-              "value": "={{ JSON.stringify({id:$('Route Meta Product Image').item.json.senderId}) }}"
-            },
-            {
-              "parameterType": "formData",
-              "name": "messaging_type",
-              "value": "RESPONSE"
-            },
-            {
-              "parameterType": "formData",
-              "name": "message",
-              "value": "={{ JSON.stringify({attachment:{type:'image',payload:{is_reusable:true}}}) }}"
-            },
-            {
-              "parameterType": "formBinaryData",
-              "name": "filedata",
-              "inputDataFieldName": "data"
-            }
-          ]
-        },
-        "options": {}
+        "operation": "executeQuery",
+        "query": "WITH upd AS (UPDATE product_media SET cache_key=COALESCE(NULLIF($2,''),cache_key),local_path=COALESCE(NULLIF($3,''),local_path),mime_type=COALESCE(NULLIF($4,''),mime_type),file_size=CASE WHEN $5::bigint>0 THEN $5::bigint ELSE file_size END,facebook_attachment_id=COALESCE(NULLIF($6,''),facebook_attachment_id),cached_at=CASE WHEN COALESCE(NULLIF($3,''),local_path) IS NOT NULL THEN NOW() ELSE cached_at END,attachment_updated_at=CASE WHEN NULLIF($6,'') IS NOT NULL THEN NOW() ELSE attachment_updated_at END,updated_at=NOW() WHERE id=NULLIF($1,'')::bigint RETURNING id), bot AS (INSERT INTO bot_outbound_messages(platform,external_account_id,customer_external_id,message_id) SELECT 'facebook',$7,$8,$9 WHERE COALESCE($9,'')<>'' ON CONFLICT(message_id) DO NOTHING RETURNING id) SELECT $9::text AS message_id,EXISTS(SELECT 1 FROM upd) AS media_cache_saved,EXISTS(SELECT 1 FROM bot) AS bot_message_saved;",
+        "options": {
+          "queryReplacement": "={{ [$('Flatten Product Media Send Cache').item.json.mediaRowId,$json.cacheKey||$('Flatten Product Media Send Cache').item.json.cacheKey,$json.localPath||$('Flatten Product Media Send Cache').item.json.localPath,$json.mimeType||$('Flatten Product Media Send Cache').item.json.mimeType,$json.fileSize||$('Flatten Product Media Send Cache').item.json.fileSize,$json.attachmentId||'',$('Flatten Product Media Send Cache').item.json.externalAccountId,$('Flatten Product Media Send Cache').item.json.senderId,$json.messageId||''] }}"
+        }
       },
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
-        5680,
-        -80
+        6160,
+        -120
       ],
-      "id": "ba115cf5-3b77-4aec-a059-19a57977f775",
-      "name": "Send Meta Product Image Binary",
-      "continueOnFail": true
+      "id": "22d1e361-a903-460a-8217-b44907a54b08",
+      "name": "Persist Facebook Product Image Cache"
     }
   ],
   "pinData": {},
@@ -2769,12 +2765,7 @@
       "main": [
         [
           {
-            "node": "Route Meta Product Image",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Route WhatsApp Product Image",
+            "node": "Load Product Media Send Cache",
             "type": "main",
             "index": 0
           }
@@ -3038,40 +3029,56 @@
         ]
       ]
     },
-    "Route Meta Product Image": {
+    "Load Product Media Send Cache": {
       "main": [
         [
           {
-            "node": "Download Product Image Binary",
+            "node": "Flatten Product Media Send Cache",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Download Product Image Binary": {
+    "Flatten Product Media Send Cache": {
       "main": [
         [
           {
-            "node": "Send Meta Product Image Binary",
+            "node": "Route Facebook Product Image Cache",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Route Other Product Image",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Send Meta Product Image Binary": {
+    "Route Facebook Product Image Cache": {
       "main": [
         [
           {
-            "node": "Store Product Image Bot Message ID",
+            "node": "Send Facebook Product Image Cached",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Route WhatsApp Product Image": {
+    "Send Facebook Product Image Cached": {
+      "main": [
+        [
+          {
+            "node": "Persist Facebook Product Image Cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Other Product Image": {
       "main": [
         [
           {

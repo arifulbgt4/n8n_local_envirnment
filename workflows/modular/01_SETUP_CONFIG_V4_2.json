@@ -1,1 +1,427 @@
-{"name":"AI Commerce V4.2 - 01 Setup & Install","nodes":[{"parameters":{"operation":"executeQuery","query":"-- AI Customer Support & Order Management V4\n-- Application database: agent_app (separate from n8n's own database)\nCREATE EXTENSION IF NOT EXISTS pg_trgm;\n\nCREATE TABLE IF NOT EXISTS system_settings (\n  key TEXT PRIMARY KEY,\n  value TEXT,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS businesses (\n  business_id TEXT PRIMARY KEY,\n  business_name TEXT NOT NULL,\n  delivery_charge_default NUMERIC(12,2) NOT NULL DEFAULT 0,\n  payment_methods TEXT NOT NULL DEFAULT 'Cash on Delivery',\n  ai_instructions TEXT NOT NULL DEFAULT '',\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS business_accounts (\n  id BIGSERIAL PRIMARY KEY,\n  account_key TEXT NOT NULL UNIQUE,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  platform TEXT NOT NULL CHECK (platform IN ('facebook','instagram','whatsapp')),\n  account_name TEXT,\n  external_account_id TEXT NOT NULL,\n  meta_app_id TEXT,\n  facebook_page_id TEXT,\n  instagram_account_id TEXT,\n  whatsapp_phone_number_id TEXT,\n  whatsapp_business_account_id TEXT,\n  meta_app_secret TEXT,\n  access_token TEXT,\n  verify_token TEXT,\n  operations_spreadsheet_id TEXT,\n  auto_create_spreadsheet BOOLEAN NOT NULL DEFAULT FALSE,\n  graph_api_version TEXT NOT NULL DEFAULT 'v26.0',\n  reply_url TEXT,\n  conversation_url_template TEXT,\n  product_sheet_name TEXT NOT NULL DEFAULT 'Products',\n  faq_sheet_name TEXT NOT NULL DEFAULT 'FAQ',\n  order_sheet_name TEXT NOT NULL DEFAULT 'Orders',\n  human_support_sheet_name TEXT NOT NULL DEFAULT 'HumanSupportQueue',\n  ai_provider TEXT NOT NULL DEFAULT 'openai',\n  ai_model TEXT NOT NULL DEFAULT 'gpt-5.6-luna',\n  ai_prompt_override TEXT NOT NULL DEFAULT '',\n  auto_human_on_manual_reply BOOLEAN NOT NULL DEFAULT TRUE,\n  max_messages_per_minute INTEGER NOT NULL DEFAULT 8,\n  max_ai_turns_per_hour INTEGER NOT NULL DEFAULT 20,\n  max_ai_turns_per_day INTEGER NOT NULL DEFAULT 100,\n  estimated_tokens_per_turn INTEGER NOT NULL DEFAULT 1800,\n  max_estimated_tokens_per_day INTEGER NOT NULL DEFAULT 100000,\n  followup_enabled_default BOOLEAN NOT NULL DEFAULT TRUE,\n  followup_1_minutes INTEGER NOT NULL DEFAULT 60,\n  followup_2_minutes INTEGER NOT NULL DEFAULT 1440,\n  control_row_number INTEGER,\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(platform, external_account_id)\n);\nCREATE INDEX IF NOT EXISTS idx_business_accounts_verify_token ON business_accounts(verify_token) WHERE active=TRUE;\nCREATE INDEX IF NOT EXISTS idx_business_accounts_business ON business_accounts(business_id) WHERE active=TRUE;\n\nCREATE TABLE IF NOT EXISTS processed_messages (\n  id BIGSERIAL PRIMARY KEY,\n  platform TEXT NOT NULL,\n  external_account_id TEXT NOT NULL,\n  message_id TEXT NOT NULL,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(platform, external_account_id, message_id)\n);\n\nCREATE TABLE IF NOT EXISTS customers (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,\n  platform TEXT NOT NULL,\n  external_user_id TEXT NOT NULL,\n  name TEXT,\n  phone TEXT,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(account_id, external_user_id)\n);\n\nCREATE TABLE IF NOT EXISTS conversations (\n  id BIGSERIAL PRIMARY KEY,\n  customer_id BIGINT NOT NULL UNIQUE REFERENCES customers(id) ON DELETE CASCADE,\n  state TEXT NOT NULL DEFAULT 'BROWSING',\n  context_json JSONB NOT NULL DEFAULT '{}'::jsonb,\n  human_mode BOOLEAN NOT NULL DEFAULT FALSE,\n  mode_source TEXT,\n  handoff_reason TEXT,\n  mode_changed_at TIMESTAMPTZ,\n  followup_enabled BOOLEAN NOT NULL DEFAULT TRUE,\n  followup_count INTEGER NOT NULL DEFAULT 0,\n  next_followup_at TIMESTAMPTZ,\n  last_customer_at TIMESTAMPTZ,\n  last_agent_at TIMESTAMPTZ,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS messages (\n  id BIGSERIAL PRIMARY KEY,\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),\n  platform_message_id TEXT,\n  message_type TEXT,\n  text TEXT,\n  media_url TEXT,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE UNIQUE INDEX IF NOT EXISTS ux_messages_platform_message ON messages(platform_message_id) WHERE platform_message_id IS NOT NULL;\nCREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS ai_turn_usage (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL,\n  account_id BIGINT NOT NULL,\n  customer_id BIGINT NOT NULL,\n  conversation_id BIGINT NOT NULL,\n  estimated_tokens INTEGER NOT NULL DEFAULT 0,\n  input_tokens INTEGER,\n  output_tokens INTEGER,\n  total_tokens INTEGER,\n  model TEXT,\n  purpose TEXT,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_ai_turn_usage_customer_time ON ai_turn_usage(account_id, customer_id, created_at DESC);\nCREATE INDEX IF NOT EXISTS idx_ai_turn_usage_account_day ON ai_turn_usage(account_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS bot_outbound_messages (\n  id BIGSERIAL PRIMARY KEY,\n  platform TEXT NOT NULL,\n  external_account_id TEXT NOT NULL,\n  customer_external_id TEXT NOT NULL,\n  message_id TEXT NOT NULL UNIQUE,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_bot_outbound_recent ON bot_outbound_messages(external_account_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS products (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,\n  external_product_id TEXT NOT NULL,\n  name TEXT NOT NULL,\n  category TEXT,\n  subcategory TEXT,\n  price NUMERIC(12,2),\n  currency TEXT NOT NULL DEFAULT 'BDT',\n  stock_qty INTEGER,\n  stock_status TEXT,\n  color TEXT,\n  size TEXT,\n  description TEXT,\n  image_url TEXT,\n  offer TEXT,\n  discount TEXT,\n  aliases TEXT,\n  ai_summary TEXT,\n  search_text TEXT NOT NULL DEFAULT '',\n  content_hash TEXT NOT NULL DEFAULT '',\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(account_id, external_product_id)\n);\nCREATE INDEX IF NOT EXISTS idx_products_account ON products(account_id);\nCREATE INDEX IF NOT EXISTS idx_products_search_trgm ON products USING GIN(search_text gin_trgm_ops);\n\nCREATE TABLE IF NOT EXISTS knowledge_base (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,\n  external_key TEXT NOT NULL,\n  question TEXT,\n  answer TEXT NOT NULL,\n  category TEXT,\n  search_text TEXT NOT NULL DEFAULT '',\n  content_hash TEXT NOT NULL DEFAULT '',\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(account_id, external_key)\n);\nCREATE INDEX IF NOT EXISTS idx_kb_account ON knowledge_base(account_id);\nCREATE INDEX IF NOT EXISTS idx_kb_search_trgm ON knowledge_base USING GIN(search_text gin_trgm_ops);\n\nCREATE TABLE IF NOT EXISTS response_cache (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL,\n  account_id BIGINT NOT NULL,\n  intent TEXT NOT NULL,\n  normalized_question TEXT NOT NULL,\n  product_id BIGINT,\n  product_version TEXT NOT NULL DEFAULT '',\n  reply TEXT NOT NULL,\n  hit_count INTEGER NOT NULL DEFAULT 0,\n  expires_at TIMESTAMPTZ,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_cache_lookup ON response_cache(account_id,intent,product_id,product_version);\nCREATE INDEX IF NOT EXISTS idx_cache_question_trgm ON response_cache USING GIN(normalized_question gin_trgm_ops);\n\nCREATE TABLE IF NOT EXISTS orders (\n  id BIGSERIAL PRIMARY KEY,\n  order_number TEXT UNIQUE NOT NULL,\n  customer_id BIGINT NOT NULL REFERENCES customers(id),\n  business_id TEXT NOT NULL REFERENCES businesses(business_id),\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id),\n  status TEXT NOT NULL DEFAULT 'NEW',\n  customer_name TEXT,\n  phone TEXT,\n  address TEXT,\n  area_name TEXT,\n  thana TEXT,\n  district TEXT,\n  payment_method TEXT,\n  note TEXT,\n  subtotal NUMERIC(12,2) NOT NULL DEFAULT 0,\n  delivery_charge NUMERIC(12,2) NOT NULL DEFAULT 0,\n  total NUMERIC(12,2) NOT NULL DEFAULT 0,\n  confirmed_at TIMESTAMPTZ,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_orders_account_created ON orders(account_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS order_items (\n  id BIGSERIAL PRIMARY KEY,\n  order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,\n  product_id BIGINT REFERENCES products(id),\n  sku TEXT,\n  product_name TEXT NOT NULL,\n  quantity INTEGER NOT NULL DEFAULT 1,\n  unit_price NUMERIC(12,2) NOT NULL DEFAULT 0,\n  total NUMERIC(12,2) NOT NULL DEFAULT 0\n);\n\nCREATE TABLE IF NOT EXISTS human_handoffs (\n  id BIGSERIAL PRIMARY KEY,\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,\n  business_id TEXT NOT NULL,\n  account_id BIGINT NOT NULL,\n  reason TEXT,\n  source TEXT,\n  summary TEXT,\n  status TEXT NOT NULL DEFAULT 'PENDING',\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  resolved_at TIMESTAMPTZ\n);\nCREATE INDEX IF NOT EXISTS idx_handoff_pending ON human_handoffs(account_id,conversation_id,status);\n\nCREATE TABLE IF NOT EXISTS followup_log (\n  id BIGSERIAL PRIMARY KEY,\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  followup_no INTEGER NOT NULL,\n  message TEXT NOT NULL,\n  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(conversation_id, followup_no)\n);\n\n-- V4.2 product variant/media reconciliation migration\nALTER TABLE products ADD COLUMN IF NOT EXISTS product_group_id TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS variant_id TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS variant_name TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS sku TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS product_url TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS attributes_json JSONB NOT NULL DEFAULT '{}'::jsonb;\n\nCREATE INDEX IF NOT EXISTS idx_products_group ON products(account_id, product_group_id) WHERE active=TRUE;\nCREATE INDEX IF NOT EXISTS idx_products_variant ON products(account_id, variant_id) WHERE active=TRUE;\n\nCREATE TABLE IF NOT EXISTS product_media (\n  id BIGSERIAL PRIMARY KEY,\n  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,\n  media_key TEXT NOT NULL,\n  source_type TEXT NOT NULL DEFAULT 'url',\n  source_ref TEXT,\n  resolved_url TEXT NOT NULL,\n  sort_order INTEGER NOT NULL DEFAULT 0,\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(product_id, media_key)\n);\nCREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_id, sort_order) WHERE active=TRUE;\n\nDO $$\nBEGIN\n  IF EXISTS (\n    SELECT 1 FROM pg_constraint\n    WHERE conname='order_items_product_id_fkey'\n      AND conrelid='order_items'::regclass\n  ) THEN\n    ALTER TABLE order_items DROP CONSTRAINT order_items_product_id_fkey;\n  END IF;\n  IF NOT EXISTS (\n    SELECT 1 FROM pg_constraint\n    WHERE conname='order_items_product_id_fkey'\n      AND conrelid='order_items'::regclass\n  ) THEN\n    ALTER TABLE order_items\n      ADD CONSTRAINT order_items_product_id_fkey\n      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL;\n  END IF;\nEND $$;\n","options":{}},"type":"n8n-nodes-base.postgres","typeVersion":2.6,"position":[-2540,-900],"id":"07206767-c3ab-41c8-b6f7-878bc56f1385","name":"02.02 - Apply / Migrate Database Schema"},{"parameters":{},"id":"a8192c96-c07e-4b34-9634-89f20b9c7fcf","name":"01 - RESET - Entire AI Agent Database (DEV ONLY)","type":"n8n-nodes-base.manualTrigger","typeVersion":1,"position":[-3000,-1600]},{"parameters":{"jsCode":"const allItems = $input.all();\nconst input = allItems.length > 0 ? (allItems[0].json || {}) : {};\nconst confirmation = String(input.reset_confirmation || '').trim();\nconst expected = 'RESET_AI_AGENT_DATABASE';\n\nif (confirmation !== expected) {\n  throw new Error(\n    'Reset blocked safely. Open node \"01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)\", ' +\n    'set reset_confirmation exactly to \"' + expected + '\", then execute Step 01 from the reset trigger. ' +\n    'After the reset finishes, change the field back to the placeholder value. Current value: ' +\n    (confirmation || '(empty)')\n  );\n}\n\nreturn allItems;"},"id":"f16f747b-2a5c-479e-8dfb-1850061e17c2","name":"01.01 - Reset Safety Guard","type":"n8n-nodes-base.code","typeVersion":2,"position":[-2780,-1600]},{"parameters":{"operation":"executeQuery","query":"-- DANGEROUS: run only against the dedicated agent_app database.\nDROP SCHEMA public CASCADE;\nCREATE SCHEMA public;\nGRANT ALL ON SCHEMA public TO PUBLIC;\n-- AI Customer Support & Order Management V4\n-- Application database: agent_app (separate from n8n's own database)\nCREATE EXTENSION IF NOT EXISTS pg_trgm;\n\nCREATE TABLE IF NOT EXISTS system_settings (\n  key TEXT PRIMARY KEY,\n  value TEXT,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS businesses (\n  business_id TEXT PRIMARY KEY,\n  business_name TEXT NOT NULL,\n  delivery_charge_default NUMERIC(12,2) NOT NULL DEFAULT 0,\n  payment_methods TEXT NOT NULL DEFAULT 'Cash on Delivery',\n  ai_instructions TEXT NOT NULL DEFAULT '',\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS business_accounts (\n  id BIGSERIAL PRIMARY KEY,\n  account_key TEXT NOT NULL UNIQUE,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  platform TEXT NOT NULL CHECK (platform IN ('facebook','instagram','whatsapp')),\n  account_name TEXT,\n  external_account_id TEXT NOT NULL,\n  meta_app_id TEXT,\n  facebook_page_id TEXT,\n  instagram_account_id TEXT,\n  whatsapp_phone_number_id TEXT,\n  whatsapp_business_account_id TEXT,\n  meta_app_secret TEXT,\n  access_token TEXT,\n  verify_token TEXT,\n  operations_spreadsheet_id TEXT,\n  auto_create_spreadsheet BOOLEAN NOT NULL DEFAULT FALSE,\n  graph_api_version TEXT NOT NULL DEFAULT 'v26.0',\n  reply_url TEXT,\n  conversation_url_template TEXT,\n  product_sheet_name TEXT NOT NULL DEFAULT 'Products',\n  faq_sheet_name TEXT NOT NULL DEFAULT 'FAQ',\n  order_sheet_name TEXT NOT NULL DEFAULT 'Orders',\n  human_support_sheet_name TEXT NOT NULL DEFAULT 'HumanSupportQueue',\n  ai_provider TEXT NOT NULL DEFAULT 'openai',\n  ai_model TEXT NOT NULL DEFAULT 'gpt-5.6-luna',\n  ai_prompt_override TEXT NOT NULL DEFAULT '',\n  auto_human_on_manual_reply BOOLEAN NOT NULL DEFAULT TRUE,\n  max_messages_per_minute INTEGER NOT NULL DEFAULT 8,\n  max_ai_turns_per_hour INTEGER NOT NULL DEFAULT 20,\n  max_ai_turns_per_day INTEGER NOT NULL DEFAULT 100,\n  estimated_tokens_per_turn INTEGER NOT NULL DEFAULT 1800,\n  max_estimated_tokens_per_day INTEGER NOT NULL DEFAULT 100000,\n  followup_enabled_default BOOLEAN NOT NULL DEFAULT TRUE,\n  followup_1_minutes INTEGER NOT NULL DEFAULT 60,\n  followup_2_minutes INTEGER NOT NULL DEFAULT 1440,\n  control_row_number INTEGER,\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(platform, external_account_id)\n);\nCREATE INDEX IF NOT EXISTS idx_business_accounts_verify_token ON business_accounts(verify_token) WHERE active=TRUE;\nCREATE INDEX IF NOT EXISTS idx_business_accounts_business ON business_accounts(business_id) WHERE active=TRUE;\n\nCREATE TABLE IF NOT EXISTS processed_messages (\n  id BIGSERIAL PRIMARY KEY,\n  platform TEXT NOT NULL,\n  external_account_id TEXT NOT NULL,\n  message_id TEXT NOT NULL,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(platform, external_account_id, message_id)\n);\n\nCREATE TABLE IF NOT EXISTS customers (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,\n  platform TEXT NOT NULL,\n  external_user_id TEXT NOT NULL,\n  name TEXT,\n  phone TEXT,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(account_id, external_user_id)\n);\n\nCREATE TABLE IF NOT EXISTS conversations (\n  id BIGSERIAL PRIMARY KEY,\n  customer_id BIGINT NOT NULL UNIQUE REFERENCES customers(id) ON DELETE CASCADE,\n  state TEXT NOT NULL DEFAULT 'BROWSING',\n  context_json JSONB NOT NULL DEFAULT '{}'::jsonb,\n  human_mode BOOLEAN NOT NULL DEFAULT FALSE,\n  mode_source TEXT,\n  handoff_reason TEXT,\n  mode_changed_at TIMESTAMPTZ,\n  followup_enabled BOOLEAN NOT NULL DEFAULT TRUE,\n  followup_count INTEGER NOT NULL DEFAULT 0,\n  next_followup_at TIMESTAMPTZ,\n  last_customer_at TIMESTAMPTZ,\n  last_agent_at TIMESTAMPTZ,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS messages (\n  id BIGSERIAL PRIMARY KEY,\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),\n  platform_message_id TEXT,\n  message_type TEXT,\n  text TEXT,\n  media_url TEXT,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE UNIQUE INDEX IF NOT EXISTS ux_messages_platform_message ON messages(platform_message_id) WHERE platform_message_id IS NOT NULL;\nCREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS ai_turn_usage (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL,\n  account_id BIGINT NOT NULL,\n  customer_id BIGINT NOT NULL,\n  conversation_id BIGINT NOT NULL,\n  estimated_tokens INTEGER NOT NULL DEFAULT 0,\n  input_tokens INTEGER,\n  output_tokens INTEGER,\n  total_tokens INTEGER,\n  model TEXT,\n  purpose TEXT,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_ai_turn_usage_customer_time ON ai_turn_usage(account_id, customer_id, created_at DESC);\nCREATE INDEX IF NOT EXISTS idx_ai_turn_usage_account_day ON ai_turn_usage(account_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS bot_outbound_messages (\n  id BIGSERIAL PRIMARY KEY,\n  platform TEXT NOT NULL,\n  external_account_id TEXT NOT NULL,\n  customer_external_id TEXT NOT NULL,\n  message_id TEXT NOT NULL UNIQUE,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_bot_outbound_recent ON bot_outbound_messages(external_account_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS products (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,\n  external_product_id TEXT NOT NULL,\n  name TEXT NOT NULL,\n  category TEXT,\n  subcategory TEXT,\n  price NUMERIC(12,2),\n  currency TEXT NOT NULL DEFAULT 'BDT',\n  stock_qty INTEGER,\n  stock_status TEXT,\n  color TEXT,\n  size TEXT,\n  description TEXT,\n  image_url TEXT,\n  offer TEXT,\n  discount TEXT,\n  aliases TEXT,\n  ai_summary TEXT,\n  search_text TEXT NOT NULL DEFAULT '',\n  content_hash TEXT NOT NULL DEFAULT '',\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(account_id, external_product_id)\n);\nCREATE INDEX IF NOT EXISTS idx_products_account ON products(account_id);\nCREATE INDEX IF NOT EXISTS idx_products_search_trgm ON products USING GIN(search_text gin_trgm_ops);\n\nCREATE TABLE IF NOT EXISTS knowledge_base (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,\n  external_key TEXT NOT NULL,\n  question TEXT,\n  answer TEXT NOT NULL,\n  category TEXT,\n  search_text TEXT NOT NULL DEFAULT '',\n  content_hash TEXT NOT NULL DEFAULT '',\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(account_id, external_key)\n);\nCREATE INDEX IF NOT EXISTS idx_kb_account ON knowledge_base(account_id);\nCREATE INDEX IF NOT EXISTS idx_kb_search_trgm ON knowledge_base USING GIN(search_text gin_trgm_ops);\n\nCREATE TABLE IF NOT EXISTS response_cache (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL,\n  account_id BIGINT NOT NULL,\n  intent TEXT NOT NULL,\n  normalized_question TEXT NOT NULL,\n  product_id BIGINT,\n  product_version TEXT NOT NULL DEFAULT '',\n  reply TEXT NOT NULL,\n  hit_count INTEGER NOT NULL DEFAULT 0,\n  expires_at TIMESTAMPTZ,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_cache_lookup ON response_cache(account_id,intent,product_id,product_version);\nCREATE INDEX IF NOT EXISTS idx_cache_question_trgm ON response_cache USING GIN(normalized_question gin_trgm_ops);\n\nCREATE TABLE IF NOT EXISTS orders (\n  id BIGSERIAL PRIMARY KEY,\n  order_number TEXT UNIQUE NOT NULL,\n  customer_id BIGINT NOT NULL REFERENCES customers(id),\n  business_id TEXT NOT NULL REFERENCES businesses(business_id),\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id),\n  status TEXT NOT NULL DEFAULT 'NEW',\n  customer_name TEXT,\n  phone TEXT,\n  address TEXT,\n  area_name TEXT,\n  thana TEXT,\n  district TEXT,\n  payment_method TEXT,\n  note TEXT,\n  subtotal NUMERIC(12,2) NOT NULL DEFAULT 0,\n  delivery_charge NUMERIC(12,2) NOT NULL DEFAULT 0,\n  total NUMERIC(12,2) NOT NULL DEFAULT 0,\n  confirmed_at TIMESTAMPTZ,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_orders_account_created ON orders(account_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS order_items (\n  id BIGSERIAL PRIMARY KEY,\n  order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,\n  product_id BIGINT REFERENCES products(id),\n  sku TEXT,\n  product_name TEXT NOT NULL,\n  quantity INTEGER NOT NULL DEFAULT 1,\n  unit_price NUMERIC(12,2) NOT NULL DEFAULT 0,\n  total NUMERIC(12,2) NOT NULL DEFAULT 0\n);\n\nCREATE TABLE IF NOT EXISTS human_handoffs (\n  id BIGSERIAL PRIMARY KEY,\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,\n  business_id TEXT NOT NULL,\n  account_id BIGINT NOT NULL,\n  reason TEXT,\n  source TEXT,\n  summary TEXT,\n  status TEXT NOT NULL DEFAULT 'PENDING',\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  resolved_at TIMESTAMPTZ\n);\nCREATE INDEX IF NOT EXISTS idx_handoff_pending ON human_handoffs(account_id,conversation_id,status);\n\nCREATE TABLE IF NOT EXISTS followup_log (\n  id BIGSERIAL PRIMARY KEY,\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  followup_no INTEGER NOT NULL,\n  message TEXT NOT NULL,\n  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(conversation_id, followup_no)\n);\n\n-- V4.2 product variant/media reconciliation migration\nALTER TABLE products ADD COLUMN IF NOT EXISTS product_group_id TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS variant_id TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS variant_name TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS sku TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS product_url TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS attributes_json JSONB NOT NULL DEFAULT '{}'::jsonb;\n\nCREATE INDEX IF NOT EXISTS idx_products_group ON products(account_id, product_group_id) WHERE active=TRUE;\nCREATE INDEX IF NOT EXISTS idx_products_variant ON products(account_id, variant_id) WHERE active=TRUE;\n\nCREATE TABLE IF NOT EXISTS product_media (\n  id BIGSERIAL PRIMARY KEY,\n  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,\n  media_key TEXT NOT NULL,\n  source_type TEXT NOT NULL DEFAULT 'url',\n  source_ref TEXT,\n  resolved_url TEXT NOT NULL,\n  sort_order INTEGER NOT NULL DEFAULT 0,\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(product_id, media_key)\n);\nCREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_id, sort_order) WHERE active=TRUE;\n\nDO $$\nBEGIN\n  IF EXISTS (\n    SELECT 1 FROM pg_constraint\n    WHERE conname='order_items_product_id_fkey'\n      AND conrelid='order_items'::regclass\n  ) THEN\n    ALTER TABLE order_items DROP CONSTRAINT order_items_product_id_fkey;\n  END IF;\n  IF NOT EXISTS (\n    SELECT 1 FROM pg_constraint\n    WHERE conname='order_items_product_id_fkey'\n      AND conrelid='order_items'::regclass\n  ) THEN\n    ALTER TABLE order_items\n      ADD CONSTRAINT order_items_product_id_fkey\n      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL;\n  END IF;\nEND $$;\n","options":{}},"id":"a1e588a3-df31-459e-a954-fb5bad7375ba","name":"01.02 - Drop + Recreate Application Database Schema","type":"n8n-nodes-base.postgres","typeVersion":2.6,"position":[-2540,-1600]},{"parameters":{"formTitle":"02 - INSTALL - Bootstrap AI Customer Support System","formDescription":"Enter only the empty Control Spreadsheet ID. All business/page configuration is entered later in that spreadsheet.","formFields":{"values":[{"fieldLabel":"Control Spreadsheet ID","fieldName":"controlSpreadsheetId","requiredField":true}]},"options":{}},"id":"ab7e7700-c1a1-4190-bca7-c84c4ea03655","name":"02 - INSTALL - Bootstrap System (ONLY input: Control Spreadsheet ID)","type":"n8n-nodes-base.formTrigger","typeVersion":2.6,"position":[-3000,-900]},{"parameters":{"jsCode":"const id=String($json.controlSpreadsheetId||$json['Control Spreadsheet ID']||'').trim();if(!/^[A-Za-z0-9_-]{20,}$/.test(id))throw new Error('Invalid Google Spreadsheet ID');return[{json:{controlSpreadsheetId:id}}];"},"id":"d7596f63-15f8-4919-8754-3789592aa943","name":"02.01 - Validate Control Spreadsheet ID","type":"n8n-nodes-base.code","typeVersion":2,"position":[-2780,-900]},{"parameters":{"operation":"executeQuery","query":"INSERT INTO system_settings(key,value,updated_at) VALUES('control_spreadsheet_id',$1,NOW()) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW() RETURNING value AS control_spreadsheet_id;","options":{"queryReplacement":"={{ [ $('02.01 - Validate Control Spreadsheet ID').first().json.controlSpreadsheetId ] }}"}},"id":"ab8b17ad-75df-45c1-b3bf-ff4a0ec17a61","name":"02.03 - Store Control Spreadsheet ID","type":"n8n-nodes-base.postgres","typeVersion":2.6,"position":[-2300,-900]},{"parameters":{"url":"={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $json.control_spreadsheet_id + '?fields=sheets.properties' }}","authentication":"predefinedCredentialType","nodeCredentialType":"googleSheetsOAuth2Api","options":{}},"id":"3049831d-577d-49c7-b6de-f8ff3af84428","name":"02.04 - Read Control Spreadsheet Metadata","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[-2060,-900]},{"parameters":{"jsCode":"const id=$('02.03 - Store Control Spreadsheet ID').item.json.control_spreadsheet_id;const required={\"00_INSTALL\": [\"Key\", \"Value\", \"Updated At\"], \"01_BUSINESSES\": [\"Business Key\", \"Business Name\", \"Delivery Charge\", \"Payment Methods\", \"Default AI Prompt\", \"Active\", \"Updated At\"], \"02_ACCOUNTS\": [\"Account Key\", \"Business Key\", \"Platform\", \"Account Name\", \"External Account ID\", \"Meta App ID\", \"Facebook Page ID\", \"Instagram Account ID\", \"WhatsApp Phone Number ID\", \"WhatsApp Business Account ID\", \"Meta App Secret\", \"Access Token\", \"Verify Token\", \"Operations Spreadsheet ID\", \"Auto Create Spreadsheet\", \"Graph API Version\", \"Reply URL\", \"Conversation URL Template\", \"AI Provider\", \"AI Model\", \"AI Prompt Override\", \"Max Messages Per Minute\", \"Max AI Turns Per Hour\", \"Max AI Turns Per Day\", \"Estimated Tokens Per Turn\", \"Max Estimated Tokens Per Day\", \"Followup Enabled\", \"Followup 1 Minutes\", \"Followup 2 Minutes\", \"Auto Human On Manual Reply\", \"Active\", \"Updated At\"], \"05_SYNC_STATUS\": [\"Account Key\", \"Status\", \"Message\", \"Last Sync At\"], \"06_EXECUTION_LOG\": [\"Timestamp\", \"Step\", \"Status\", \"Message\"]};const existing=new Set(($json.sheets||[]).map(s=>s.properties?.title));const missing=Object.keys(required).filter(t=>!existing.has(t));return[{json:{controlSpreadsheetId:id,missing,requests:missing.map(title=>({addSheet:{properties:{title}}})),headers:required}}];"},"id":"5a793660-f2ab-482c-9592-9e8ebdea3080","name":"02.05 - Build Missing Control Tabs","type":"n8n-nodes-base.code","typeVersion":2,"position":[-1820,-900]},{"parameters":{"method":"POST","url":"={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $json.controlSpreadsheetId + ':batchUpdate' }}","authentication":"predefinedCredentialType","nodeCredentialType":"googleSheetsOAuth2Api","sendBody":true,"specifyBody":"json","jsonBody":"={{ {requests:$json.requests} }}","options":{}},"id":"ada9357c-7ce7-4568-8ed1-ca0e4b192936","name":"02.06 - Create Missing Control Tabs","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[-1580,-900]},{"parameters":{"jsCode":"const x=$('02.05 - Build Missing Control Tabs').item.json;const data=Object.entries(x.headers).map(([title,row])=>({range:`${title}!A1`,majorDimension:'ROWS',values:[row]}));data.push({range:'00_INSTALL!A2',majorDimension:'ROWS',values:[['schema_version','4',new Date().toISOString()],['control_spreadsheet_id',x.controlSpreadsheetId,new Date().toISOString()]]});return[{json:{controlSpreadsheetId:x.controlSpreadsheetId,data}}];"},"id":"1d86d087-1ee6-4e83-a0a0-57bc31c693a2","name":"02.07 - Prepare Control Header Batch","type":"n8n-nodes-base.code","typeVersion":2,"position":[-1340,-900]},{"parameters":{"method":"POST","url":"={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $json.controlSpreadsheetId + '/values:batchUpdate' }}","authentication":"predefinedCredentialType","nodeCredentialType":"googleSheetsOAuth2Api","sendBody":true,"specifyBody":"json","jsonBody":"={{ {valueInputOption:'USER_ENTERED',data:$json.data} }}","options":{}},"id":"7ce6ad9a-d2f6-434c-85db-9bac26875909","name":"02.08 - Write Control Headers","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[-1100,-900]},{"parameters":{"jsCode":"return [{json:{ok:true,message:'Bootstrap complete. Fill 01_BUSINESSES and 02_ACCOUNTS, then run step 03.',controlSpreadsheetId:$('02.07 - Prepare Control Header Batch').item.json.controlSpreadsheetId}}];"},"id":"03066d22-f512-4570-9f8a-a60dd0373560","name":"02.09 - Install Complete","type":"n8n-nodes-base.code","typeVersion":2,"position":[-860,-900]},{"parameters":{"assignments":{"assignments":[{"id":"d8b87706-bde5-47d7-9993-6f45c609d23a","name":"reset_confirmation","value":"CHANGE_ME__TYPE_RESET_AI_AGENT_DATABASE","type":"string"}]},"options":{}},"type":"n8n-nodes-base.set","typeVersion":3.4,"position":[-3020,-1600],"id":"d81bbe57-2b9c-41e4-b6e2-a387a0e2d456","name":"01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)"},{"parameters":{"conditions":{"options":{"caseSensitive":true,"leftValue":"","typeValidation":"strict"},"conditions":[{"id":"v42-empty-control-tabs-guard-condition","leftValue":"={{ Array.isArray($json.requests) && $json.requests.length > 0 }}","rightValue":true,"operator":{"type":"boolean","operation":"true","singleValue":true}}],"combinator":"and"},"options":{}},"id":"v42-empty-control-tabs-guard","name":"02.05A - Any Missing Control Tabs?","type":"n8n-nodes-base.if","typeVersion":2.2,"position":[-1700,-900]}],"pinData":{},"connections":{"01 - RESET - Entire AI Agent Database (DEV ONLY)":{"main":[[{"node":"01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)","type":"main","index":0}]]},"01.01 - Reset Safety Guard":{"main":[[{"node":"01.02 - Drop + Recreate Application Database Schema","type":"main","index":0}]]},"02 - INSTALL - Bootstrap System (ONLY input: Control Spreadsheet ID)":{"main":[[{"node":"02.01 - Validate Control Spreadsheet ID","type":"main","index":0}]]},"02.01 - Validate Control Spreadsheet ID":{"main":[[{"node":"02.02 - Apply / Migrate Database Schema","type":"main","index":0}]]},"02.02 - Apply / Migrate Database Schema":{"main":[[{"node":"02.03 - Store Control Spreadsheet ID","type":"main","index":0}]]},"02.03 - Store Control Spreadsheet ID":{"main":[[{"node":"02.04 - Read Control Spreadsheet Metadata","type":"main","index":0}]]},"02.04 - Read Control Spreadsheet Metadata":{"main":[[{"node":"02.05 - Build Missing Control Tabs","type":"main","index":0}]]},"02.05 - Build Missing Control Tabs":{"main":[[{"node":"02.05A - Any Missing Control Tabs?","type":"main","index":0}]]},"02.06 - Create Missing Control Tabs":{"main":[[{"node":"02.07 - Prepare Control Header Batch","type":"main","index":0}]]},"02.07 - Prepare Control Header Batch":{"main":[[{"node":"02.08 - Write Control Headers","type":"main","index":0}]]},"02.08 - Write Control Headers":{"main":[[{"node":"02.09 - Install Complete","type":"main","index":0}]]},"01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)":{"main":[[{"node":"01.01 - Reset Safety Guard","type":"main","index":0}]]},"02.05A - Any Missing Control Tabs?":{"main":[[{"node":"02.06 - Create Missing Control Tabs","type":"main","index":0}],[{"node":"02.07 - Prepare Control Header Batch","type":"main","index":0}]]}},"active":false,"settings":{"executionOrder":"v1","timezone":"Asia/Dhaka"},"versionId":"bac6cb8f-c344-4d87-b91e-45063973b24d","meta":{"templateCredsSetupCompleted":false},"tags":[]}
+{
+  "name": "AI Commerce V4.2 - 01 Setup & Install",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- AI Customer Support & Order Management V4\n-- Application database: agent_app (separate from n8n's own database)\nCREATE EXTENSION IF NOT EXISTS pg_trgm;\n\nCREATE TABLE IF NOT EXISTS system_settings (\n  key TEXT PRIMARY KEY,\n  value TEXT,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS businesses (\n  business_id TEXT PRIMARY KEY,\n  business_name TEXT NOT NULL,\n  delivery_charge_default NUMERIC(12,2) NOT NULL DEFAULT 0,\n  payment_methods TEXT NOT NULL DEFAULT 'Cash on Delivery',\n  ai_instructions TEXT NOT NULL DEFAULT '',\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS business_accounts (\n  id BIGSERIAL PRIMARY KEY,\n  account_key TEXT NOT NULL UNIQUE,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  platform TEXT NOT NULL CHECK (platform IN ('facebook','instagram','whatsapp')),\n  account_name TEXT,\n  external_account_id TEXT NOT NULL,\n  meta_app_id TEXT,\n  facebook_page_id TEXT,\n  instagram_account_id TEXT,\n  whatsapp_phone_number_id TEXT,\n  whatsapp_business_account_id TEXT,\n  meta_app_secret TEXT,\n  access_token TEXT,\n  verify_token TEXT,\n  operations_spreadsheet_id TEXT,\n  auto_create_spreadsheet BOOLEAN NOT NULL DEFAULT FALSE,\n  graph_api_version TEXT NOT NULL DEFAULT 'v26.0',\n  reply_url TEXT,\n  conversation_url_template TEXT,\n  product_sheet_name TEXT NOT NULL DEFAULT 'Products',\n  faq_sheet_name TEXT NOT NULL DEFAULT 'FAQ',\n  order_sheet_name TEXT NOT NULL DEFAULT 'Orders',\n  human_support_sheet_name TEXT NOT NULL DEFAULT 'HumanSupportQueue',\n  ai_provider TEXT NOT NULL DEFAULT 'openai',\n  ai_model TEXT NOT NULL DEFAULT 'gpt-5.6-luna',\n  ai_prompt_override TEXT NOT NULL DEFAULT '',\n  auto_human_on_manual_reply BOOLEAN NOT NULL DEFAULT TRUE,\n  max_messages_per_minute INTEGER NOT NULL DEFAULT 8,\n  max_ai_turns_per_hour INTEGER NOT NULL DEFAULT 20,\n  max_ai_turns_per_day INTEGER NOT NULL DEFAULT 100,\n  estimated_tokens_per_turn INTEGER NOT NULL DEFAULT 1800,\n  max_estimated_tokens_per_day INTEGER NOT NULL DEFAULT 100000,\n  followup_enabled_default BOOLEAN NOT NULL DEFAULT TRUE,\n  followup_1_minutes INTEGER NOT NULL DEFAULT 60,\n  followup_2_minutes INTEGER NOT NULL DEFAULT 1440,\n  control_row_number INTEGER,\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(platform, external_account_id)\n);\nCREATE INDEX IF NOT EXISTS idx_business_accounts_verify_token ON business_accounts(verify_token) WHERE active=TRUE;\nCREATE INDEX IF NOT EXISTS idx_business_accounts_business ON business_accounts(business_id) WHERE active=TRUE;\n\nCREATE TABLE IF NOT EXISTS processed_messages (\n  id BIGSERIAL PRIMARY KEY,\n  platform TEXT NOT NULL,\n  external_account_id TEXT NOT NULL,\n  message_id TEXT NOT NULL,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(platform, external_account_id, message_id)\n);\n\nCREATE TABLE IF NOT EXISTS customers (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,\n  platform TEXT NOT NULL,\n  external_user_id TEXT NOT NULL,\n  name TEXT,\n  phone TEXT,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(account_id, external_user_id)\n);\n\nCREATE TABLE IF NOT EXISTS conversations (\n  id BIGSERIAL PRIMARY KEY,\n  customer_id BIGINT NOT NULL UNIQUE REFERENCES customers(id) ON DELETE CASCADE,\n  state TEXT NOT NULL DEFAULT 'BROWSING',\n  context_json JSONB NOT NULL DEFAULT '{}'::jsonb,\n  human_mode BOOLEAN NOT NULL DEFAULT FALSE,\n  mode_source TEXT,\n  handoff_reason TEXT,\n  mode_changed_at TIMESTAMPTZ,\n  followup_enabled BOOLEAN NOT NULL DEFAULT TRUE,\n  followup_count INTEGER NOT NULL DEFAULT 0,\n  next_followup_at TIMESTAMPTZ,\n  last_customer_at TIMESTAMPTZ,\n  last_agent_at TIMESTAMPTZ,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS messages (\n  id BIGSERIAL PRIMARY KEY,\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),\n  platform_message_id TEXT,\n  message_type TEXT,\n  text TEXT,\n  media_url TEXT,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE UNIQUE INDEX IF NOT EXISTS ux_messages_platform_message ON messages(platform_message_id) WHERE platform_message_id IS NOT NULL;\nCREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS ai_turn_usage (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL,\n  account_id BIGINT NOT NULL,\n  customer_id BIGINT NOT NULL,\n  conversation_id BIGINT NOT NULL,\n  estimated_tokens INTEGER NOT NULL DEFAULT 0,\n  input_tokens INTEGER,\n  output_tokens INTEGER,\n  total_tokens INTEGER,\n  model TEXT,\n  purpose TEXT,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_ai_turn_usage_customer_time ON ai_turn_usage(account_id, customer_id, created_at DESC);\nCREATE INDEX IF NOT EXISTS idx_ai_turn_usage_account_day ON ai_turn_usage(account_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS bot_outbound_messages (\n  id BIGSERIAL PRIMARY KEY,\n  platform TEXT NOT NULL,\n  external_account_id TEXT NOT NULL,\n  customer_external_id TEXT NOT NULL,\n  message_id TEXT NOT NULL UNIQUE,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_bot_outbound_recent ON bot_outbound_messages(external_account_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS products (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,\n  external_product_id TEXT NOT NULL,\n  name TEXT NOT NULL,\n  category TEXT,\n  subcategory TEXT,\n  price NUMERIC(12,2),\n  currency TEXT NOT NULL DEFAULT 'BDT',\n  stock_qty INTEGER,\n  stock_status TEXT,\n  color TEXT,\n  size TEXT,\n  description TEXT,\n  image_url TEXT,\n  offer TEXT,\n  discount TEXT,\n  aliases TEXT,\n  ai_summary TEXT,\n  search_text TEXT NOT NULL DEFAULT '',\n  content_hash TEXT NOT NULL DEFAULT '',\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(account_id, external_product_id)\n);\nCREATE INDEX IF NOT EXISTS idx_products_account ON products(account_id);\nCREATE INDEX IF NOT EXISTS idx_products_search_trgm ON products USING GIN(search_text gin_trgm_ops);\n\nCREATE TABLE IF NOT EXISTS knowledge_base (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,\n  external_key TEXT NOT NULL,\n  question TEXT,\n  answer TEXT NOT NULL,\n  category TEXT,\n  search_text TEXT NOT NULL DEFAULT '',\n  content_hash TEXT NOT NULL DEFAULT '',\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(account_id, external_key)\n);\nCREATE INDEX IF NOT EXISTS idx_kb_account ON knowledge_base(account_id);\nCREATE INDEX IF NOT EXISTS idx_kb_search_trgm ON knowledge_base USING GIN(search_text gin_trgm_ops);\n\nCREATE TABLE IF NOT EXISTS response_cache (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL,\n  account_id BIGINT NOT NULL,\n  intent TEXT NOT NULL,\n  normalized_question TEXT NOT NULL,\n  product_id BIGINT,\n  product_version TEXT NOT NULL DEFAULT '',\n  reply TEXT NOT NULL,\n  hit_count INTEGER NOT NULL DEFAULT 0,\n  expires_at TIMESTAMPTZ,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_cache_lookup ON response_cache(account_id,intent,product_id,product_version);\nCREATE INDEX IF NOT EXISTS idx_cache_question_trgm ON response_cache USING GIN(normalized_question gin_trgm_ops);\n\nCREATE TABLE IF NOT EXISTS orders (\n  id BIGSERIAL PRIMARY KEY,\n  order_number TEXT UNIQUE NOT NULL,\n  customer_id BIGINT NOT NULL REFERENCES customers(id),\n  business_id TEXT NOT NULL REFERENCES businesses(business_id),\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id),\n  status TEXT NOT NULL DEFAULT 'NEW',\n  customer_name TEXT,\n  phone TEXT,\n  address TEXT,\n  area_name TEXT,\n  thana TEXT,\n  district TEXT,\n  payment_method TEXT,\n  note TEXT,\n  subtotal NUMERIC(12,2) NOT NULL DEFAULT 0,\n  delivery_charge NUMERIC(12,2) NOT NULL DEFAULT 0,\n  total NUMERIC(12,2) NOT NULL DEFAULT 0,\n  confirmed_at TIMESTAMPTZ,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_orders_account_created ON orders(account_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS order_items (\n  id BIGSERIAL PRIMARY KEY,\n  order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,\n  product_id BIGINT REFERENCES products(id),\n  sku TEXT,\n  product_name TEXT NOT NULL,\n  quantity INTEGER NOT NULL DEFAULT 1,\n  unit_price NUMERIC(12,2) NOT NULL DEFAULT 0,\n  total NUMERIC(12,2) NOT NULL DEFAULT 0\n);\n\nCREATE TABLE IF NOT EXISTS human_handoffs (\n  id BIGSERIAL PRIMARY KEY,\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,\n  business_id TEXT NOT NULL,\n  account_id BIGINT NOT NULL,\n  reason TEXT,\n  source TEXT,\n  summary TEXT,\n  status TEXT NOT NULL DEFAULT 'PENDING',\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  resolved_at TIMESTAMPTZ\n);\nCREATE INDEX IF NOT EXISTS idx_handoff_pending ON human_handoffs(account_id,conversation_id,status);\n\nCREATE TABLE IF NOT EXISTS followup_log (\n  id BIGSERIAL PRIMARY KEY,\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  followup_no INTEGER NOT NULL,\n  message TEXT NOT NULL,\n  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(conversation_id, followup_no)\n);\n\n-- V4.2 product variant/media reconciliation migration\nALTER TABLE products ADD COLUMN IF NOT EXISTS product_group_id TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS variant_id TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS variant_name TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS sku TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS product_url TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS attributes_json JSONB NOT NULL DEFAULT '{}'::jsonb;\n\nCREATE INDEX IF NOT EXISTS idx_products_group ON products(account_id, product_group_id) WHERE active=TRUE;\nCREATE INDEX IF NOT EXISTS idx_products_variant ON products(account_id, variant_id) WHERE active=TRUE;\n\nCREATE TABLE IF NOT EXISTS product_media (\n  id BIGSERIAL PRIMARY KEY,\n  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,\n  media_key TEXT NOT NULL,\n  source_type TEXT NOT NULL DEFAULT 'url',\n  source_ref TEXT,\n  resolved_url TEXT NOT NULL,\n  sort_order INTEGER NOT NULL DEFAULT 0,\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(product_id, media_key)\n);\nCREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_id, sort_order) WHERE active=TRUE;\n\nDO $$\nBEGIN\n  IF EXISTS (\n    SELECT 1 FROM pg_constraint\n    WHERE conname='order_items_product_id_fkey'\n      AND conrelid='order_items'::regclass\n  ) THEN\n    ALTER TABLE order_items DROP CONSTRAINT order_items_product_id_fkey;\n  END IF;\n  IF NOT EXISTS (\n    SELECT 1 FROM pg_constraint\n    WHERE conname='order_items_product_id_fkey'\n      AND conrelid='order_items'::regclass\n  ) THEN\n    ALTER TABLE order_items\n      ADD CONSTRAINT order_items_product_id_fkey\n      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL;\n  END IF;\nEND $$;\n\n-- Persistent local/Meta product media cache\nALTER TABLE product_media ADD COLUMN IF NOT EXISTS cache_key TEXT;\nALTER TABLE product_media ADD COLUMN IF NOT EXISTS content_hash TEXT;\nALTER TABLE product_media ADD COLUMN IF NOT EXISTS local_path TEXT;\nALTER TABLE product_media ADD COLUMN IF NOT EXISTS mime_type TEXT;\nALTER TABLE product_media ADD COLUMN IF NOT EXISTS file_size BIGINT;\nALTER TABLE product_media ADD COLUMN IF NOT EXISTS facebook_attachment_id TEXT;\nALTER TABLE product_media ADD COLUMN IF NOT EXISTS instagram_attachment_id TEXT;\nALTER TABLE product_media ADD COLUMN IF NOT EXISTS cached_at TIMESTAMPTZ;\nALTER TABLE product_media ADD COLUMN IF NOT EXISTS attachment_updated_at TIMESTAMPTZ;\nCREATE INDEX IF NOT EXISTS idx_product_media_facebook_attachment ON product_media(facebook_attachment_id) WHERE facebook_attachment_id IS NOT NULL;\n\nCREATE OR REPLACE FUNCTION invalidate_product_media_cache_on_source_change()\nRETURNS trigger AS $$\nBEGIN\n  IF NEW.resolved_url IS DISTINCT FROM OLD.resolved_url\n     OR NEW.source_ref IS DISTINCT FROM OLD.source_ref THEN\n    NEW.cache_key := NULL;\n    NEW.content_hash := NULL;\n    NEW.local_path := NULL;\n    NEW.mime_type := NULL;\n    NEW.file_size := NULL;\n    NEW.facebook_attachment_id := NULL;\n    NEW.instagram_attachment_id := NULL;\n    NEW.cached_at := NULL;\n    NEW.attachment_updated_at := NULL;\n  END IF;\n  RETURN NEW;\nEND;\n$$ LANGUAGE plpgsql;\n\nDROP TRIGGER IF EXISTS trg_product_media_cache_invalidate ON product_media;\nCREATE TRIGGER trg_product_media_cache_invalidate\nBEFORE UPDATE OF source_ref,resolved_url ON product_media\nFOR EACH ROW EXECUTE FUNCTION invalidate_product_media_cache_on_source_change();\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -2540,
+        -900
+      ],
+      "id": "07206767-c3ab-41c8-b6f7-878bc56f1385",
+      "name": "02.02 - Apply / Migrate Database Schema"
+    },
+    {
+      "parameters": {},
+      "id": "a8192c96-c07e-4b34-9634-89f20b9c7fcf",
+      "name": "01 - RESET - Entire AI Agent Database (DEV ONLY)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -3000,
+        -1600
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const allItems = $input.all();\nconst input = allItems.length > 0 ? (allItems[0].json || {}) : {};\nconst confirmation = String(input.reset_confirmation || '').trim();\nconst expected = 'RESET_AI_AGENT_DATABASE';\n\nif (confirmation !== expected) {\n  throw new Error(\n    'Reset blocked safely. Open node \"01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)\", ' +\n    'set reset_confirmation exactly to \"' + expected + '\", then execute Step 01 from the reset trigger. ' +\n    'After the reset finishes, change the field back to the placeholder value. Current value: ' +\n    (confirmation || '(empty)')\n  );\n}\n\nreturn allItems;"
+      },
+      "id": "f16f747b-2a5c-479e-8dfb-1850061e17c2",
+      "name": "01.01 - Reset Safety Guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2780,
+        -1600
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- DANGEROUS: run only against the dedicated agent_app database.\nDROP SCHEMA public CASCADE;\nCREATE SCHEMA public;\nGRANT ALL ON SCHEMA public TO PUBLIC;\n-- AI Customer Support & Order Management V4\n-- Application database: agent_app (separate from n8n's own database)\nCREATE EXTENSION IF NOT EXISTS pg_trgm;\n\nCREATE TABLE IF NOT EXISTS system_settings (\n  key TEXT PRIMARY KEY,\n  value TEXT,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS businesses (\n  business_id TEXT PRIMARY KEY,\n  business_name TEXT NOT NULL,\n  delivery_charge_default NUMERIC(12,2) NOT NULL DEFAULT 0,\n  payment_methods TEXT NOT NULL DEFAULT 'Cash on Delivery',\n  ai_instructions TEXT NOT NULL DEFAULT '',\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS business_accounts (\n  id BIGSERIAL PRIMARY KEY,\n  account_key TEXT NOT NULL UNIQUE,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  platform TEXT NOT NULL CHECK (platform IN ('facebook','instagram','whatsapp')),\n  account_name TEXT,\n  external_account_id TEXT NOT NULL,\n  meta_app_id TEXT,\n  facebook_page_id TEXT,\n  instagram_account_id TEXT,\n  whatsapp_phone_number_id TEXT,\n  whatsapp_business_account_id TEXT,\n  meta_app_secret TEXT,\n  access_token TEXT,\n  verify_token TEXT,\n  operations_spreadsheet_id TEXT,\n  auto_create_spreadsheet BOOLEAN NOT NULL DEFAULT FALSE,\n  graph_api_version TEXT NOT NULL DEFAULT 'v26.0',\n  reply_url TEXT,\n  conversation_url_template TEXT,\n  product_sheet_name TEXT NOT NULL DEFAULT 'Products',\n  faq_sheet_name TEXT NOT NULL DEFAULT 'FAQ',\n  order_sheet_name TEXT NOT NULL DEFAULT 'Orders',\n  human_support_sheet_name TEXT NOT NULL DEFAULT 'HumanSupportQueue',\n  ai_provider TEXT NOT NULL DEFAULT 'openai',\n  ai_model TEXT NOT NULL DEFAULT 'gpt-5.6-luna',\n  ai_prompt_override TEXT NOT NULL DEFAULT '',\n  auto_human_on_manual_reply BOOLEAN NOT NULL DEFAULT TRUE,\n  max_messages_per_minute INTEGER NOT NULL DEFAULT 8,\n  max_ai_turns_per_hour INTEGER NOT NULL DEFAULT 20,\n  max_ai_turns_per_day INTEGER NOT NULL DEFAULT 100,\n  estimated_tokens_per_turn INTEGER NOT NULL DEFAULT 1800,\n  max_estimated_tokens_per_day INTEGER NOT NULL DEFAULT 100000,\n  followup_enabled_default BOOLEAN NOT NULL DEFAULT TRUE,\n  followup_1_minutes INTEGER NOT NULL DEFAULT 60,\n  followup_2_minutes INTEGER NOT NULL DEFAULT 1440,\n  control_row_number INTEGER,\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(platform, external_account_id)\n);\nCREATE INDEX IF NOT EXISTS idx_business_accounts_verify_token ON business_accounts(verify_token) WHERE active=TRUE;\nCREATE INDEX IF NOT EXISTS idx_business_accounts_business ON business_accounts(business_id) WHERE active=TRUE;\n\nCREATE TABLE IF NOT EXISTS processed_messages (\n  id BIGSERIAL PRIMARY KEY,\n  platform TEXT NOT NULL,\n  external_account_id TEXT NOT NULL,\n  message_id TEXT NOT NULL,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(platform, external_account_id, message_id)\n);\n\nCREATE TABLE IF NOT EXISTS customers (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,\n  platform TEXT NOT NULL,\n  external_user_id TEXT NOT NULL,\n  name TEXT,\n  phone TEXT,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(account_id, external_user_id)\n);\n\nCREATE TABLE IF NOT EXISTS conversations (\n  id BIGSERIAL PRIMARY KEY,\n  customer_id BIGINT NOT NULL UNIQUE REFERENCES customers(id) ON DELETE CASCADE,\n  state TEXT NOT NULL DEFAULT 'BROWSING',\n  context_json JSONB NOT NULL DEFAULT '{}'::jsonb,\n  human_mode BOOLEAN NOT NULL DEFAULT FALSE,\n  mode_source TEXT,\n  handoff_reason TEXT,\n  mode_changed_at TIMESTAMPTZ,\n  followup_enabled BOOLEAN NOT NULL DEFAULT TRUE,\n  followup_count INTEGER NOT NULL DEFAULT 0,\n  next_followup_at TIMESTAMPTZ,\n  last_customer_at TIMESTAMPTZ,\n  last_agent_at TIMESTAMPTZ,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS messages (\n  id BIGSERIAL PRIMARY KEY,\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),\n  platform_message_id TEXT,\n  message_type TEXT,\n  text TEXT,\n  media_url TEXT,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE UNIQUE INDEX IF NOT EXISTS ux_messages_platform_message ON messages(platform_message_id) WHERE platform_message_id IS NOT NULL;\nCREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS ai_turn_usage (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL,\n  account_id BIGINT NOT NULL,\n  customer_id BIGINT NOT NULL,\n  conversation_id BIGINT NOT NULL,\n  estimated_tokens INTEGER NOT NULL DEFAULT 0,\n  input_tokens INTEGER,\n  output_tokens INTEGER,\n  total_tokens INTEGER,\n  model TEXT,\n  purpose TEXT,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_ai_turn_usage_customer_time ON ai_turn_usage(account_id, customer_id, created_at DESC);\nCREATE INDEX IF NOT EXISTS idx_ai_turn_usage_account_day ON ai_turn_usage(account_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS bot_outbound_messages (\n  id BIGSERIAL PRIMARY KEY,\n  platform TEXT NOT NULL,\n  external_account_id TEXT NOT NULL,\n  customer_external_id TEXT NOT NULL,\n  message_id TEXT NOT NULL UNIQUE,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_bot_outbound_recent ON bot_outbound_messages(external_account_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS products (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,\n  external_product_id TEXT NOT NULL,\n  name TEXT NOT NULL,\n  category TEXT,\n  subcategory TEXT,\n  price NUMERIC(12,2),\n  currency TEXT NOT NULL DEFAULT 'BDT',\n  stock_qty INTEGER,\n  stock_status TEXT,\n  color TEXT,\n  size TEXT,\n  description TEXT,\n  image_url TEXT,\n  offer TEXT,\n  discount TEXT,\n  aliases TEXT,\n  ai_summary TEXT,\n  search_text TEXT NOT NULL DEFAULT '',\n  content_hash TEXT NOT NULL DEFAULT '',\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(account_id, external_product_id)\n);\nCREATE INDEX IF NOT EXISTS idx_products_account ON products(account_id);\nCREATE INDEX IF NOT EXISTS idx_products_search_trgm ON products USING GIN(search_text gin_trgm_ops);\n\nCREATE TABLE IF NOT EXISTS knowledge_base (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL REFERENCES businesses(business_id) ON DELETE CASCADE,\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,\n  external_key TEXT NOT NULL,\n  question TEXT,\n  answer TEXT NOT NULL,\n  category TEXT,\n  search_text TEXT NOT NULL DEFAULT '',\n  content_hash TEXT NOT NULL DEFAULT '',\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(account_id, external_key)\n);\nCREATE INDEX IF NOT EXISTS idx_kb_account ON knowledge_base(account_id);\nCREATE INDEX IF NOT EXISTS idx_kb_search_trgm ON knowledge_base USING GIN(search_text gin_trgm_ops);\n\nCREATE TABLE IF NOT EXISTS response_cache (\n  id BIGSERIAL PRIMARY KEY,\n  business_id TEXT NOT NULL,\n  account_id BIGINT NOT NULL,\n  intent TEXT NOT NULL,\n  normalized_question TEXT NOT NULL,\n  product_id BIGINT,\n  product_version TEXT NOT NULL DEFAULT '',\n  reply TEXT NOT NULL,\n  hit_count INTEGER NOT NULL DEFAULT 0,\n  expires_at TIMESTAMPTZ,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_cache_lookup ON response_cache(account_id,intent,product_id,product_version);\nCREATE INDEX IF NOT EXISTS idx_cache_question_trgm ON response_cache USING GIN(normalized_question gin_trgm_ops);\n\nCREATE TABLE IF NOT EXISTS orders (\n  id BIGSERIAL PRIMARY KEY,\n  order_number TEXT UNIQUE NOT NULL,\n  customer_id BIGINT NOT NULL REFERENCES customers(id),\n  business_id TEXT NOT NULL REFERENCES businesses(business_id),\n  account_id BIGINT NOT NULL REFERENCES business_accounts(id),\n  status TEXT NOT NULL DEFAULT 'NEW',\n  customer_name TEXT,\n  phone TEXT,\n  address TEXT,\n  area_name TEXT,\n  thana TEXT,\n  district TEXT,\n  payment_method TEXT,\n  note TEXT,\n  subtotal NUMERIC(12,2) NOT NULL DEFAULT 0,\n  delivery_charge NUMERIC(12,2) NOT NULL DEFAULT 0,\n  total NUMERIC(12,2) NOT NULL DEFAULT 0,\n  confirmed_at TIMESTAMPTZ,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_orders_account_created ON orders(account_id, created_at DESC);\n\nCREATE TABLE IF NOT EXISTS order_items (\n  id BIGSERIAL PRIMARY KEY,\n  order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,\n  product_id BIGINT REFERENCES products(id),\n  sku TEXT,\n  product_name TEXT NOT NULL,\n  quantity INTEGER NOT NULL DEFAULT 1,\n  unit_price NUMERIC(12,2) NOT NULL DEFAULT 0,\n  total NUMERIC(12,2) NOT NULL DEFAULT 0\n);\n\nCREATE TABLE IF NOT EXISTS human_handoffs (\n  id BIGSERIAL PRIMARY KEY,\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,\n  business_id TEXT NOT NULL,\n  account_id BIGINT NOT NULL,\n  reason TEXT,\n  source TEXT,\n  summary TEXT,\n  status TEXT NOT NULL DEFAULT 'PENDING',\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  resolved_at TIMESTAMPTZ\n);\nCREATE INDEX IF NOT EXISTS idx_handoff_pending ON human_handoffs(account_id,conversation_id,status);\n\nCREATE TABLE IF NOT EXISTS followup_log (\n  id BIGSERIAL PRIMARY KEY,\n  conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n  followup_no INTEGER NOT NULL,\n  message TEXT NOT NULL,\n  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(conversation_id, followup_no)\n);\n\n-- V4.2 product variant/media reconciliation migration\nALTER TABLE products ADD COLUMN IF NOT EXISTS product_group_id TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS variant_id TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS variant_name TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS sku TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS product_url TEXT;\nALTER TABLE products ADD COLUMN IF NOT EXISTS attributes_json JSONB NOT NULL DEFAULT '{}'::jsonb;\n\nCREATE INDEX IF NOT EXISTS idx_products_group ON products(account_id, product_group_id) WHERE active=TRUE;\nCREATE INDEX IF NOT EXISTS idx_products_variant ON products(account_id, variant_id) WHERE active=TRUE;\n\nCREATE TABLE IF NOT EXISTS product_media (\n  id BIGSERIAL PRIMARY KEY,\n  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,\n  media_key TEXT NOT NULL,\n  source_type TEXT NOT NULL DEFAULT 'url',\n  source_ref TEXT,\n  resolved_url TEXT NOT NULL,\n  sort_order INTEGER NOT NULL DEFAULT 0,\n  active BOOLEAN NOT NULL DEFAULT TRUE,\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  UNIQUE(product_id, media_key)\n);\nCREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_id, sort_order) WHERE active=TRUE;\n\nDO $$\nBEGIN\n  IF EXISTS (\n    SELECT 1 FROM pg_constraint\n    WHERE conname='order_items_product_id_fkey'\n      AND conrelid='order_items'::regclass\n  ) THEN\n    ALTER TABLE order_items DROP CONSTRAINT order_items_product_id_fkey;\n  END IF;\n  IF NOT EXISTS (\n    SELECT 1 FROM pg_constraint\n    WHERE conname='order_items_product_id_fkey'\n      AND conrelid='order_items'::regclass\n  ) THEN\n    ALTER TABLE order_items\n      ADD CONSTRAINT order_items_product_id_fkey\n      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL;\n  END IF;\nEND $$;\n",
+        "options": {}
+      },
+      "id": "a1e588a3-df31-459e-a954-fb5bad7375ba",
+      "name": "01.02 - Drop + Recreate Application Database Schema",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -2540,
+        -1600
+      ]
+    },
+    {
+      "parameters": {
+        "formTitle": "02 - INSTALL - Bootstrap AI Customer Support System",
+        "formDescription": "Enter only the empty Control Spreadsheet ID. All business/page configuration is entered later in that spreadsheet.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Control Spreadsheet ID",
+              "fieldName": "controlSpreadsheetId",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ab7e7700-c1a1-4190-bca7-c84c4ea03655",
+      "name": "02 - INSTALL - Bootstrap System (ONLY input: Control Spreadsheet ID)",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        -3000,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const id=String($json.controlSpreadsheetId||$json['Control Spreadsheet ID']||'').trim();if(!/^[A-Za-z0-9_-]{20,}$/.test(id))throw new Error('Invalid Google Spreadsheet ID');return[{json:{controlSpreadsheetId:id}}];"
+      },
+      "id": "d7596f63-15f8-4919-8754-3789592aa943",
+      "name": "02.01 - Validate Control Spreadsheet ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2780,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO system_settings(key,value,updated_at) VALUES('control_spreadsheet_id',$1,NOW()) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW() RETURNING value AS control_spreadsheet_id;",
+        "options": {
+          "queryReplacement": "={{ [ $('02.01 - Validate Control Spreadsheet ID').first().json.controlSpreadsheetId ] }}"
+        }
+      },
+      "id": "ab8b17ad-75df-45c1-b3bf-ff4a0ec17a61",
+      "name": "02.03 - Store Control Spreadsheet ID",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -2300,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $json.control_spreadsheet_id + '?fields=sheets.properties' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "id": "3049831d-577d-49c7-b6de-f8ff3af84428",
+      "name": "02.04 - Read Control Spreadsheet Metadata",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2060,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const id=$('02.03 - Store Control Spreadsheet ID').item.json.control_spreadsheet_id;const required={\"00_INSTALL\": [\"Key\", \"Value\", \"Updated At\"], \"01_BUSINESSES\": [\"Business Key\", \"Business Name\", \"Delivery Charge\", \"Payment Methods\", \"Default AI Prompt\", \"Active\", \"Updated At\"], \"02_ACCOUNTS\": [\"Account Key\", \"Business Key\", \"Platform\", \"Account Name\", \"External Account ID\", \"Meta App ID\", \"Facebook Page ID\", \"Instagram Account ID\", \"WhatsApp Phone Number ID\", \"WhatsApp Business Account ID\", \"Meta App Secret\", \"Access Token\", \"Verify Token\", \"Operations Spreadsheet ID\", \"Auto Create Spreadsheet\", \"Graph API Version\", \"Reply URL\", \"Conversation URL Template\", \"AI Provider\", \"AI Model\", \"AI Prompt Override\", \"Max Messages Per Minute\", \"Max AI Turns Per Hour\", \"Max AI Turns Per Day\", \"Estimated Tokens Per Turn\", \"Max Estimated Tokens Per Day\", \"Followup Enabled\", \"Followup 1 Minutes\", \"Followup 2 Minutes\", \"Auto Human On Manual Reply\", \"Active\", \"Updated At\"], \"05_SYNC_STATUS\": [\"Account Key\", \"Status\", \"Message\", \"Last Sync At\"], \"06_EXECUTION_LOG\": [\"Timestamp\", \"Step\", \"Status\", \"Message\"]};const existing=new Set(($json.sheets||[]).map(s=>s.properties?.title));const missing=Object.keys(required).filter(t=>!existing.has(t));return[{json:{controlSpreadsheetId:id,missing,requests:missing.map(title=>({addSheet:{properties:{title}}})),headers:required}}];"
+      },
+      "id": "5a793660-f2ab-482c-9592-9e8ebdea3080",
+      "name": "02.05 - Build Missing Control Tabs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1820,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $json.controlSpreadsheetId + ':batchUpdate' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {requests:$json.requests} }}",
+        "options": {}
+      },
+      "id": "ada9357c-7ce7-4568-8ed1-ca0e4b192936",
+      "name": "02.06 - Create Missing Control Tabs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1580,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$('02.05 - Build Missing Control Tabs').item.json;const data=Object.entries(x.headers).map(([title,row])=>({range:`${title}!A1`,majorDimension:'ROWS',values:[row]}));data.push({range:'00_INSTALL!A2',majorDimension:'ROWS',values:[['schema_version','4',new Date().toISOString()],['control_spreadsheet_id',x.controlSpreadsheetId,new Date().toISOString()]]});return[{json:{controlSpreadsheetId:x.controlSpreadsheetId,data}}];"
+      },
+      "id": "1d86d087-1ee6-4e83-a0a0-57bc31c693a2",
+      "name": "02.07 - Prepare Control Header Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1340,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $json.controlSpreadsheetId + '/values:batchUpdate' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {valueInputOption:'USER_ENTERED',data:$json.data} }}",
+        "options": {}
+      },
+      "id": "7ce6ad9a-d2f6-434c-85db-9bac26875909",
+      "name": "02.08 - Write Control Headers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1100,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:{ok:true,message:'Bootstrap complete. Fill 01_BUSINESSES and 02_ACCOUNTS, then run step 03.',controlSpreadsheetId:$('02.07 - Prepare Control Header Batch').item.json.controlSpreadsheetId}}];"
+      },
+      "id": "03066d22-f512-4570-9f8a-a60dd0373560",
+      "name": "02.09 - Install Complete",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -860,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "d8b87706-bde5-47d7-9993-6f45c609d23a",
+              "name": "reset_confirmation",
+              "value": "CHANGE_ME__TYPE_RESET_AI_AGENT_DATABASE",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -3020,
+        -1600
+      ],
+      "id": "d81bbe57-2b9c-41e4-b6e2-a387a0e2d456",
+      "name": "01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "v42-empty-control-tabs-guard-condition",
+              "leftValue": "={{ Array.isArray($json.requests) && $json.requests.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "v42-empty-control-tabs-guard",
+      "name": "02.05A - Any Missing Control Tabs?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1700,
+        -900
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "01 - RESET - Entire AI Agent Database (DEV ONLY)": {
+      "main": [
+        [
+          {
+            "node": "01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "01.01 - Reset Safety Guard": {
+      "main": [
+        [
+          {
+            "node": "01.02 - Drop + Recreate Application Database Schema",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02 - INSTALL - Bootstrap System (ONLY input: Control Spreadsheet ID)": {
+      "main": [
+        [
+          {
+            "node": "02.01 - Validate Control Spreadsheet ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02.01 - Validate Control Spreadsheet ID": {
+      "main": [
+        [
+          {
+            "node": "02.02 - Apply / Migrate Database Schema",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02.02 - Apply / Migrate Database Schema": {
+      "main": [
+        [
+          {
+            "node": "02.03 - Store Control Spreadsheet ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02.03 - Store Control Spreadsheet ID": {
+      "main": [
+        [
+          {
+            "node": "02.04 - Read Control Spreadsheet Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02.04 - Read Control Spreadsheet Metadata": {
+      "main": [
+        [
+          {
+            "node": "02.05 - Build Missing Control Tabs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02.05 - Build Missing Control Tabs": {
+      "main": [
+        [
+          {
+            "node": "02.05A - Any Missing Control Tabs?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02.06 - Create Missing Control Tabs": {
+      "main": [
+        [
+          {
+            "node": "02.07 - Prepare Control Header Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02.07 - Prepare Control Header Batch": {
+      "main": [
+        [
+          {
+            "node": "02.08 - Write Control Headers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02.08 - Write Control Headers": {
+      "main": [
+        [
+          {
+            "node": "02.09 - Install Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)": {
+      "main": [
+        [
+          {
+            "node": "01.01 - Reset Safety Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02.05A - Any Missing Control Tabs?": {
+      "main": [
+        [
+          {
+            "node": "02.06 - Create Missing Control Tabs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "02.07 - Prepare Control Header Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Dhaka"
+  },
+  "versionId": "bac6cb8f-c344-4d87-b91e-45063973b24d",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

@@ -19,12 +19,35 @@ services:
       timeout: 5s
       retries: 10
 
+  media-cache:
+    build:
+      context: ./services/media-cache
+    container_name: n8n-media-cache
+    restart: unless-stopped
+    environment:
+      PORT: 3001
+      CACHE_DIR: /data/product-media
+      MAX_IMAGE_BYTES: ${PRODUCT_MEDIA_CACHE_MAX_BYTES:-26214400}
+      GRAPH_VERSION: v26.0
+      TZ: ${TZ}
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - product_media_cache:/data/product-media
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   n8n:
     image: n8nio/n8n:latest
     container_name: n8n
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      media-cache:
         condition: service_healthy
     ports:
       - "127.0.0.1:5678:5678"
@@ -38,3 +61,5 @@ volumes:
     name: n8n_data
   postgres_data:
     name: n8n_postgres_data
+  product_media_cache:
+    name: n8n_product_media_cache

@@ -289,12 +289,58 @@ CREATE TABLE IF NOT EXISTS product_media (
   source_type TEXT NOT NULL DEFAULT 'url',
   source_ref TEXT,
   resolved_url TEXT NOT NULL,
+  cache_key TEXT,
+  content_hash TEXT,
+  local_path TEXT,
+  mime_type TEXT,
+  file_size BIGINT,
+  facebook_attachment_id TEXT,
+  instagram_attachment_id TEXT,
+  cached_at TIMESTAMPTZ,
+  attachment_updated_at TIMESTAMPTZ,
   sort_order INTEGER NOT NULL DEFAULT 0,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(product_id, media_key)
 );
 CREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_id, sort_order) WHERE active=TRUE;
+
+-- Persistent local/Meta product media cache
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS cache_key TEXT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS local_path TEXT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS mime_type TEXT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS file_size BIGINT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS facebook_attachment_id TEXT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS instagram_attachment_id TEXT;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS cached_at TIMESTAMPTZ;
+ALTER TABLE product_media ADD COLUMN IF NOT EXISTS attachment_updated_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_product_media_facebook_attachment ON product_media(facebook_attachment_id) WHERE facebook_attachment_id IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION invalidate_product_media_cache_on_source_change()
+RETURNS trigger AS $$
+BEGIN
+  IF NEW.resolved_url IS DISTINCT FROM OLD.resolved_url
+     OR NEW.source_ref IS DISTINCT FROM OLD.source_ref THEN
+    NEW.cache_key := NULL;
+    NEW.content_hash := NULL;
+    NEW.local_path := NULL;
+    NEW.mime_type := NULL;
+    NEW.file_size := NULL;
+    NEW.facebook_attachment_id := NULL;
+    NEW.instagram_attachment_id := NULL;
+    NEW.cached_at := NULL;
+    NEW.attachment_updated_at := NULL;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_product_media_cache_invalidate ON product_media;
+CREATE TRIGGER trg_product_media_cache_invalidate
+BEFORE UPDATE OF source_ref,resolved_url ON product_media
+FOR EACH ROW EXECUTE FUNCTION invalidate_product_media_cache_on_source_change();
+
 
 DO $$
 BEGIN

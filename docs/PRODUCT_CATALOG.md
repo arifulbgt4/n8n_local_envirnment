@@ -27,3 +27,12 @@ The `Products` tab must remain readable for a shop owner. Existing product sheet
 For a newly-created sheet, the visible columns are intentionally compact: `Product Name`, `Price`, `Product Description`, `Product Image`, `Stock Status`, `Stock Qty`, `Category`, `Subcategory`, `Color`, `Size`, `SKU`, `Product URL`, `Offer`, `Discount`, `Aliases`, `Active`, `Updated At`.
 
 Direct-image helper columns (`Resolved Image ...`, `_Image File ID ...`, `_Image Hash ...`) are internal implementation details. The Apps Script creates them when required and hides them automatically. Old empty `Image 2..5` columns are hidden as well; if the merchant actually puts data in one, it stays visible. Do not infer or write fake Color/Size values back into the merchant sheet; those fields are used only when explicitly supplied.
+
+
+## Persistent local product media cache
+
+Product images are pre-warmed by catalog sync into the Docker named volume `n8n_product_media_cache` through the internal `media-cache` service. Image bytes therefore survive normal `docker compose down` / `up` cycles as long as volumes are not deleted.
+
+For Facebook, the first successful send creates a reusable Meta `attachment_id`, stored in `product_media.facebook_attachment_id`. Later requests use that attachment ID directly, avoiding Google Drive downloads and repeated binary uploads. If Meta rejects the cached ID, the service falls back to the persistent local file/source URL, uploads a fresh reusable attachment, sends it, and returns the new ID for PostgreSQL persistence.
+
+Do not run `docker compose down -v` during normal restarts; that deletes the persistent product media cache volume.
