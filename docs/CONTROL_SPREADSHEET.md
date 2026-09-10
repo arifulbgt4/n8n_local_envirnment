@@ -14,13 +14,15 @@ Step 02 turns the one empty spreadsheet into the control plane.
 
 ## `01_BUSINESSES` columns
 
-`Business Key | Business Name | Delivery Charge | Payment Methods | Default AI Prompt | Active | Updated At`
+`Business Key | Business Name | Delivery Charge | Payment Methods | Active | Updated At`
 
 Example:
 
-`shari_ghor | Shari Ghor | 80 | Cash on Delivery | Reply in the customer's language. Never guess price. | TRUE |`
+`shari_ghor | Shari Ghor | 80 | Cash on Delivery | TRUE |`
 
 `Business Key` is your internal business identifier. It is not a Facebook Page ID.
+
+Business-level AI prompt text is intentionally not stored in `01_BUSINESSES`. Configure all runtime prompts per account in `03_AI_PROMPTS`.
 
 ## `02_ACCOUNTS` columns
 

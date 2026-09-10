@@ -21,11 +21,14 @@ CREATE TABLE IF NOT EXISTS businesses (
   business_name TEXT NOT NULL,
   delivery_charge_default NUMERIC(12,2) NOT NULL DEFAULT 0,
   payment_methods TEXT NOT NULL DEFAULT 'Cash on Delivery',
-  ai_instructions TEXT NOT NULL DEFAULT '',
   active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+
+-- Legacy business-level prompt storage is obsolete. Runtime prompts live only in 03_AI_PROMPTS.
+ALTER TABLE businesses DROP COLUMN IF EXISTS ai_instructions;
 
 CREATE TABLE IF NOT EXISTS business_accounts (
   id BIGSERIAL PRIMARY KEY,
