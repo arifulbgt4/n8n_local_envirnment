@@ -87,8 +87,12 @@ Columns:
 
 Each account can have any number of prompt rows. `Prompt Key` is normalized to uppercase underscore form. Current runtime keys are:
 
+
 - `INTENT_CLASSIFIER`
+- `IMAGE_PRODUCT_ANALYSIS`
 - `PRODUCT_SEARCH_RESPONSE`
+- `ORDER_DETAILS_EXTRACT_AI`
+- `GENERAL_ANSWER_AI`
 
 Prompt text supports safe placeholders such as `{{message}}`, `{{conversationState}}`, `{{businessName}}`, `{{inputSource}}`, `{{products}}`, `{{context}}`, or nested paths such as `{{context.selected_product}}`. Objects and arrays are rendered as JSON. Arbitrary JavaScript expressions are intentionally not evaluated.
 
