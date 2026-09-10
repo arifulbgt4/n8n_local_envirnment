@@ -111,3 +111,8 @@ https://YOUR-NGROK-DOMAIN/webhook/meta-commerce
 ```
 
 Never use `docker compose down -v` for a routine restart; it removes persistent volumes. See `DATABASES_AND_DOCKER.md`.
+
+
+## Google Sheets transient connection resets
+
+Control-tab creation is verification-driven. After a create attempt, n8n re-reads spreadsheet metadata and retries only tabs that are still missing, for at most three verified attempts. This safely recovers when Google closes a TLS socket and also avoids duplicate-sheet errors when a create request succeeded but its HTTP response was lost.
