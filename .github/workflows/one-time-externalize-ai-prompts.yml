@@ -1,0 +1,303 @@
+name: One-time externalize AI prompts
+
+on:
+  push:
+    paths:
+      - '.github/workflows/one-time-externalize-ai-prompts.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Externalize all AI prompts to Control Spreadsheet
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from uuid import uuid4
+
+          PROMPT_DDL = """CREATE TABLE IF NOT EXISTS ai_prompts (
+            id BIGSERIAL PRIMARY KEY,
+            account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,
+            prompt_key TEXT NOT NULL,
+            prompt_text TEXT NOT NULL,
+            content_hash TEXT NOT NULL DEFAULT '',
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            source_updated_at TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(account_id, prompt_key)
+          );
+          CREATE INDEX IF NOT EXISTS idx_ai_prompts_account_active ON ai_prompts(account_id, prompt_key) WHERE active=TRUE;"""
+
+          ACCOUNT_INDEX_MARKER = "CREATE INDEX IF NOT EXISTS idx_business_accounts_business ON business_accounts(business_id) WHERE active=TRUE;"
+
+          def ensure_prompt_ddl(text):
+              if 'CREATE TABLE IF NOT EXISTS ai_prompts' in text:
+                  return text
+              if ACCOUNT_INDEX_MARKER not in text:
+                  raise SystemExit('Could not find business_accounts schema marker')
+              return text.replace(ACCOUNT_INDEX_MARKER, ACCOUNT_INDEX_MARKER + '\n\n' + PROMPT_DDL, 1)
+
+          # Keep canonical SQL/schema/reset files aligned.
+          for file_name in ['init-db/001-init.sql', 'docs/DATABASE_SCHEMA.sql', 'docs/RESET_APPLICATION_DATABASE.sql']:
+              p = Path(file_name)
+              p.write_text(ensure_prompt_ddl(p.read_text(encoding='utf-8')), encoding='utf-8')
+
+          # Setup workflow: create ai_prompts schema and 03_AI_PROMPTS Control tab.
+          setup_path = Path('workflows/modular/01_SETUP_CONFIG_V4_2.json')
+          setup = json.loads(setup_path.read_text(encoding='utf-8'))
+          setup_nodes = {n['name']: n for n in setup['nodes']}
+          schema_node = setup_nodes['02.02 - Apply / Migrate Database Schema']
+          schema_node['parameters']['query'] = ensure_prompt_ddl(schema_node['parameters']['query'])
+
+          control_tabs_node = setup_nodes['02.05 - Build Missing Control Tabs']
+          code = control_tabs_node['parameters']['jsCode']
+          if '03_AI_PROMPTS' not in code:
+              needle = ', \"05_SYNC_STATUS\": [\"Account Key\", \"Status\", \"Message\", \"Last Sync At\"]'
+              insert = ', \"03_AI_PROMPTS\": [\"Account Key\", \"Prompt Key\", \"Prompt Text\", \"Active\", \"Updated At\", \"Notes\"]' + needle
+              if needle not in code:
+                  raise SystemExit('Could not find Control Spreadsheet tab insertion point')
+              code = code.replace(needle, insert, 1)
+              control_tabs_node['parameters']['jsCode'] = code
+          setup_path.write_text(json.dumps(setup, ensure_ascii=False, separators=(',', ':')) + '\n', encoding='utf-8')
+
+          # Control sync workflow: sync unlimited account-scoped prompt rows into PostgreSQL.
+          sync_path = Path('workflows/modular/01B_CONTROL_SYNC_V4_2.json')
+          sync = json.loads(sync_path.read_text(encoding='utf-8'))
+          sync_nodes = sync['nodes']
+          sync_by_name = {n['name']: n for n in sync_nodes}
+          sync_connections = sync['connections']
+
+          if '03.08 - Read AI Prompts' not in sync_by_name:
+              read_prompts = {
+                  'parameters': {
+                      'url': "={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $('03.01 - Load Control Spreadsheet ID').item.json.control_spreadsheet_id + '/values/' + encodeURIComponent('03_AI_PROMPTS!A:F') }}",
+                      'authentication': 'predefinedCredentialType',
+                      'nodeCredentialType': 'googleSheetsOAuth2Api',
+                      'options': {}
+                  },
+                  'id': str(uuid4()),
+                  'name': '03.08 - Read AI Prompts',
+                  'type': 'n8n-nodes-base.httpRequest',
+                  'typeVersion': 4.2,
+                  'position': [-1100, -100],
+                  'continueOnFail': True
+              }
+              parse_prompts = {
+                  'parameters': {
+                      'jsCode': "const v=$json.values||[];if($json.error)return[];if(v.length<1)return[{json:{rows:[]}}];const h=v[0];const bool=(x,d=true)=>x===''||x===null||x===undefined?d:!['false','0','no','off','inactive','disabled'].includes(String(x).trim().toLowerCase());const rows=v.slice(1).map(r=>Object.fromEntries(h.map((k,i)=>[String(k||'').trim(),r[i]??'']))).map(x=>({account_key:String(x['Account Key']||'').trim(),prompt_key:String(x['Prompt Key']||'').trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,''),prompt_text:String(x['Prompt Text']||''),active:bool(x['Active'],true),source_updated_at:String(x['Updated At']||'').trim()})).filter(x=>x.account_key&&x.prompt_key&&x.prompt_text.trim());return[{json:{rows}}];"
+                  },
+                  'id': str(uuid4()),
+                  'name': '03.09 - Parse + Validate AI Prompts',
+                  'type': 'n8n-nodes-base.code',
+                  'typeVersion': 2,
+                  'position': [-860, -100]
+              }
+              upsert_query = PROMPT_DDL + """
+
+          WITH incoming AS (
+            SELECT * FROM jsonb_to_recordset($1::jsonb)
+              AS x(account_key text,prompt_key text,prompt_text text,active boolean,source_updated_at text)
+          ), resolved AS (
+            SELECT ba.id AS account_id,i.prompt_key,i.prompt_text,COALESCE(i.active,TRUE) AS active,i.source_updated_at
+            FROM incoming i JOIN business_accounts ba ON ba.account_key=i.account_key
+          ), deactivated AS (
+            UPDATE ai_prompts ap
+            SET active=FALSE,updated_at=NOW()
+            WHERE ap.active=TRUE
+              AND NOT EXISTS (
+                SELECT 1 FROM resolved r
+                WHERE r.account_id=ap.account_id AND r.prompt_key=ap.prompt_key
+              )
+            RETURNING ap.account_id
+          ), upserted AS (
+            INSERT INTO ai_prompts(account_id,prompt_key,prompt_text,content_hash,active,source_updated_at,updated_at)
+            SELECT account_id,prompt_key,prompt_text,md5(prompt_text),active,source_updated_at,NOW()
+            FROM resolved
+            ON CONFLICT(account_id,prompt_key) DO UPDATE SET
+              prompt_text=EXCLUDED.prompt_text,
+              content_hash=EXCLUDED.content_hash,
+              active=EXCLUDED.active,
+              source_updated_at=EXCLUDED.source_updated_at,
+              updated_at=NOW()
+            WHERE ai_prompts.prompt_text IS DISTINCT FROM EXCLUDED.prompt_text
+               OR ai_prompts.active IS DISTINCT FROM EXCLUDED.active
+               OR ai_prompts.source_updated_at IS DISTINCT FROM EXCLUDED.source_updated_at
+            RETURNING ai_prompts.account_id
+          ), changed AS (
+            SELECT account_id FROM deactivated
+            UNION
+            SELECT account_id FROM upserted
+          ), cache_deleted AS (
+            DELETE FROM response_cache rc
+            WHERE rc.account_id IN (SELECT account_id FROM changed)
+            RETURNING rc.id
+          )
+          SELECT
+            (SELECT COUNT(*) FROM resolved)::int AS valid_prompt_rows,
+            (SELECT COUNT(*) FROM incoming)::int-(SELECT COUNT(*) FROM resolved)::int AS unmatched_prompt_rows,
+            (SELECT COUNT(*) FROM changed)::int AS changed_accounts,
+            (SELECT COUNT(*) FROM cache_deleted)::int AS invalidated_cache_rows;
+          """
+              upsert_prompts = {
+                  'parameters': {
+                      'operation': 'executeQuery',
+                      'query': upsert_query,
+                      'options': {'queryReplacement': '={{ [JSON.stringify($json.rows||[])] }}'}
+                  },
+                  'id': str(uuid4()),
+                  'name': '03.10 - Sync AI Prompts to Database',
+                  'type': 'n8n-nodes-base.postgres',
+                  'typeVersion': 2.6,
+                  'position': [-620, -100]
+              }
+              sync_nodes.extend([read_prompts, parse_prompts, upsert_prompts])
+              sync_connections['03.07 - Upsert Accounts'] = {'main': [[{'node': '03.08 - Read AI Prompts', 'type': 'main', 'index': 0}]]}
+              sync_connections['03.08 - Read AI Prompts'] = {'main': [[{'node': '03.09 - Parse + Validate AI Prompts', 'type': 'main', 'index': 0}]]}
+              sync_connections['03.09 - Parse + Validate AI Prompts'] = {'main': [[{'node': '03.10 - Sync AI Prompts to Database', 'type': 'main', 'index': 0}]]}
+          sync_path.write_text(json.dumps(sync, ensure_ascii=False, separators=(',', ':')) + '\n', encoding='utf-8')
+
+          # Messaging workflow: no AI prompt text may live in n8n.
+          msg_path = Path('workflows/modular/05_META_MESSAGING_V4_2.json')
+          msg = json.loads(msg_path.read_text(encoding='utf-8'))
+          msg_nodes = msg['nodes']
+          msg_by_name = {n['name']: n for n in msg_nodes}
+          msg_connections = msg['connections']
+
+          load_node = msg_by_name['Load Business + Customer + Conversation']
+          q = load_node['parameters']['query']
+          q = q.replace(
+              "SELECT ba.*,b.business_name,b.delivery_charge_default,b.payment_methods,b.ai_instructions,\n        COALESCE(NULLIF(ba.ai_prompt_override,''),b.ai_instructions) AS effective_ai_instructions",
+              "SELECT ba.*,b.business_name,b.delivery_charge_default,b.payment_methods"
+          )
+          q = q.replace(
+              "acct.delivery_charge_default,acct.payment_methods,acct.effective_ai_instructions AS ai_instructions,\n acct.ai_provider,acct.ai_model,acct.conversation_url_template,acct.auto_human_on_manual_reply,",
+              "acct.delivery_charge_default,acct.payment_methods,\n COALESCE((SELECT jsonb_object_agg(ap.prompt_key,ap.prompt_text) FROM ai_prompts ap WHERE ap.account_id=acct.id AND ap.active=TRUE),'{}'::jsonb) AS ai_prompts,\n acct.ai_provider,acct.ai_model,acct.conversation_url_template,acct.auto_human_on_manual_reply,"
+          )
+          if ' AS ai_prompts' not in q:
+              raise SystemExit('Could not inject ai_prompts registry into runtime query')
+          load_node['parameters']['query'] = q
+
+          base_node = msg_by_name['Build Base Context']
+          base_code = base_node['parameters']['jsCode']
+          base_code = base_code.replace("aiInstructions:j.ai_instructions||'',", "aiPrompts:j.ai_prompts||{},")
+          if 'aiPrompts:j.ai_prompts' not in base_code:
+              raise SystemExit('Could not add aiPrompts to base context')
+          base_node['parameters']['jsCode'] = base_code
+
+          prompt_nodes = [n for n in msg_nodes if n.get('parameters',{}).get('promptType') == 'define']
+          if not prompt_nodes:
+              raise SystemExit('No AI prompt nodes found')
+
+          def prompt_key_for(text):
+              if 'Classify the customer message into exactly one label' in text:
+                  return 'INTENT_CLASSIFIER'
+              if 'concise e-commerce sales assistant' in text:
+                  return 'PRODUCT_SEARCH_RESPONSE'
+              raise SystemExit('Found an unrecognized hard-coded AI prompt; externalize it explicitly before migration')
+
+          renderer_template = r"""const j=$json;
+          const promptKey='__PROMPT_KEY__';
+          const registry=(j.aiPrompts&&typeof j.aiPrompts==='object'&&!Array.isArray(j.aiPrompts))?j.aiPrompts:{};
+          const template=String(registry[promptKey]||'').trim();
+          if(!template) throw new Error(`Missing active AI prompt ${promptKey} for account ${j.accountId||j.account_id||'unknown'}. Configure it in Control Spreadsheet tab 03_AI_PROMPTS.`);
+          const getPath=(obj,path)=>{const clean=String(path||'').replace(/^\$json\./,'');return clean.split('.').filter(Boolean).reduce((v,k)=>v==null?undefined:v[k],obj);};
+          const rendered=template.replace(/\{\{\s*([A-Za-z0-9_.$-]+)\s*\}\}/g,(_,path)=>{const v=getPath(j,path);if(v===undefined||v===null)return '';return typeof v==='object'?JSON.stringify(v):String(v);});
+          return [{json:{...j,_renderedAiPrompt:rendered,_activePromptKey:promptKey}}];"""
+
+          for pnode in prompt_nodes:
+              old_text = str(pnode['parameters'].get('text',''))
+              key = prompt_key_for(old_text)
+              renderer_name = f'Render AI Prompt - {key}'
+              if renderer_name not in msg_by_name:
+                  pos = pnode.get('position', [0,0])
+                  renderer = {
+                      'parameters': {'jsCode': renderer_template.replace('__PROMPT_KEY__', key)},
+                      'id': str(uuid4()),
+                      'name': renderer_name,
+                      'type': 'n8n-nodes-base.code',
+                      'typeVersion': 2,
+                      'position': [pos[0]-220, pos[1]]
+                  }
+                  msg_nodes.append(renderer)
+                  msg_by_name[renderer_name] = renderer
+
+                  rewired = 0
+                  for source, branches in msg_connections.items():
+                      main = branches.get('main') if isinstance(branches, dict) else None
+                      if not main:
+                          continue
+                      for output in main:
+                          for edge in output:
+                              if edge.get('node') == pnode['name']:
+                                  edge['node'] = renderer_name
+                                  rewired += 1
+                  if rewired == 0:
+                      raise SystemExit(f'Could not find main input connection for AI node {pnode["name"]}')
+                  msg_connections[renderer_name] = {'main': [[{'node': pnode['name'], 'type': 'main', 'index': 0}]]}
+
+              pnode['parameters']['text'] = '={{ $json._renderedAiPrompt }}'
+
+          serialized = json.dumps(msg, ensure_ascii=False, separators=(',', ':'))
+          if 'Classify the customer message into exactly one label' in serialized or 'concise e-commerce sales assistant' in serialized:
+              raise SystemExit('Hard-coded AI prompt text still exists in messaging workflow')
+          if 'aiInstructions' in serialized or 'effective_ai_instructions' in serialized:
+              raise SystemExit('Legacy embedded AI instruction path still exists in messaging workflow')
+          for n in msg_nodes:
+              if n.get('parameters',{}).get('promptType') == 'define' and n['parameters'].get('text') != '={{ $json._renderedAiPrompt }}':
+                  raise SystemExit('A promptType=define node still contains embedded prompt text')
+          msg_path.write_text(serialized + '\n', encoding='utf-8')
+
+          # Document the prompt registry. No default prompt content is seeded.
+          docs_path = Path('docs/CONTROL_SPREADSHEET.md')
+          docs = docs_path.read_text(encoding='utf-8')
+          docs = docs.replace('- `02_ACCOUNTS`\n- `05_SYNC_STATUS`', '- `02_ACCOUNTS`\n- `03_AI_PROMPTS`\n- `05_SYNC_STATUS`')
+          section = """
+
+## 03_AI_PROMPTS — account-scoped AI prompt registry
+
+All runtime AI prompt text is controlled from this tab. n8n contains no fallback/default business prompt text.
+
+Columns:
+
+`Account Key | Prompt Key | Prompt Text | Active | Updated At | Notes`
+
+Each account can have any number of prompt rows. `Prompt Key` is normalized to uppercase underscore form. Current runtime keys are:
+
+- `INTENT_CLASSIFIER`
+- `PRODUCT_SEARCH_RESPONSE`
+
+Prompt text supports safe data placeholders such as `{{message}}`, `{{conversationState}}`, `{{businessName}}`, `{{inputSource}}`, `{{products}}`, `{{context}}`, or nested paths such as `{{context.selected_product}}`. Objects/arrays are rendered as JSON. Arbitrary JavaScript expressions are intentionally not evaluated.
+
+There is no cross-account or n8n fallback. If a required active prompt is missing, the AI call stops with a configuration error naming the missing `Prompt Key` and account. Updating, disabling, or deleting a prompt row is synced into PostgreSQL by `01B Control Spreadsheet Sync`, and affected response-cache rows are invalidated so the new prompt takes effect.
+"""
+          if '## 03_AI_PROMPTS — account-scoped AI prompt registry' not in docs:
+              docs += section
+          docs_path.write_text(docs, encoding='utf-8')
+
+          # Ensure all JSON files touched remain valid.
+          for p in [setup_path, sync_path, msg_path]:
+              json.loads(p.read_text(encoding='utf-8'))
+
+          print('AI prompts externalized successfully.')
+          PY
+
+      - name: Commit migration
+        shell: bash
+        run: |
+          rm -f .github/workflows/one-time-externalize-ai-prompts.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: move account AI prompts to Control Spreadsheet'
+          git push
