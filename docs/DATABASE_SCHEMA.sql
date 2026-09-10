@@ -43,14 +43,8 @@ CREATE TABLE IF NOT EXISTS business_accounts (
   faq_sheet_name TEXT NOT NULL DEFAULT 'FAQ',
   order_sheet_name TEXT NOT NULL DEFAULT 'Orders',
   human_support_sheet_name TEXT NOT NULL DEFAULT 'HumanSupportQueue',
-  ai_provider TEXT,
-  ai_model TEXT,
-  ai_api_key TEXT,
-  ai_base_url TEXT,
-  ai_audio_provider TEXT,
-  ai_audio_model TEXT,
-  ai_audio_api_key TEXT,
-  ai_audio_base_url TEXT,
+  ai_provider TEXT NOT NULL DEFAULT 'openai',
+  ai_model TEXT NOT NULL DEFAULT 'gpt-5.6-luna',
   ai_prompt_override TEXT NOT NULL DEFAULT '',
   auto_human_on_manual_reply BOOLEAN NOT NULL DEFAULT TRUE,
   max_messages_per_minute INTEGER NOT NULL DEFAULT 8,
@@ -395,16 +389,3 @@ CREATE TABLE IF NOT EXISTS ai_runtime_configs (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_runtime_configs_account_active
   ON ai_runtime_configs(account_id, config_key) WHERE active=TRUE;
-
-
--- Dynamic per-account AI provider/model credentials. No provider or model default is enforced by n8n.
-ALTER TABLE business_accounts ADD COLUMN IF NOT EXISTS ai_api_key TEXT;
-ALTER TABLE business_accounts ADD COLUMN IF NOT EXISTS ai_base_url TEXT;
-ALTER TABLE business_accounts ADD COLUMN IF NOT EXISTS ai_audio_provider TEXT;
-ALTER TABLE business_accounts ADD COLUMN IF NOT EXISTS ai_audio_model TEXT;
-ALTER TABLE business_accounts ADD COLUMN IF NOT EXISTS ai_audio_api_key TEXT;
-ALTER TABLE business_accounts ADD COLUMN IF NOT EXISTS ai_audio_base_url TEXT;
-ALTER TABLE business_accounts ALTER COLUMN ai_provider DROP DEFAULT;
-ALTER TABLE business_accounts ALTER COLUMN ai_model DROP DEFAULT;
-ALTER TABLE business_accounts ALTER COLUMN ai_provider DROP NOT NULL;
-ALTER TABLE business_accounts ALTER COLUMN ai_model DROP NOT NULL;

@@ -40,32 +40,6 @@ services:
       timeout: 5s
       retries: 10
 
-  ai-gateway:
-    build:
-      context: ./services/ai-gateway
-    container_name: n8n-ai-gateway
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PORT: 3002
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-120000}
-      MAX_BODY_BYTES: ${AI_GATEWAY_MAX_BODY_BYTES:-41943040}
-      TZ: ${TZ}
-    expose:
-      - "3002"
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
   n8n:
     image: n8nio/n8n:latest
     container_name: n8n
@@ -74,8 +48,6 @@ services:
       postgres:
         condition: service_healthy
       media-cache:
-        condition: service_healthy
-      ai-gateway:
         condition: service_healthy
     ports:
       - "127.0.0.1:5678:5678"

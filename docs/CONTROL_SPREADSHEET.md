@@ -115,23 +115,3 @@ Supported provider adapters: `openai`, `anthropic`, `gemini`, and `openai_compat
 Example: one Page can use `DEFAULT=anthropic`, `IMAGE_PRODUCT_ANALYSIS=gemini`, and `AUDIO_TRANSCRIPTION=openai`; another Page can use a completely different set. If neither an exact task config nor `DEFAULT` exists, the AI call fails with a configuration error instead of silently falling back to any n8n provider/model.
 
 API keys are intentionally sourced from the Control Spreadsheet as requested and are copied into PostgreSQL by `01B Control Spreadsheet Sync`. Restrict the Control Spreadsheet, PostgreSQL database, and n8n execution-data access to trusted administrators because these are secrets.
-
-
-## Dynamic AI provider/model per account
-
-AI execution is provider-agnostic. `05 Meta Messaging` contains no fixed OpenAI/Gemini/Anthropic model node and no static AI credential. The internal `ai-gateway` reads the selected account configuration from PostgreSQL and calls the configured provider.
-
-The following columns are appended to `02_ACCOUNTS` so existing rows do not shift:
-
-- `AI API Key` — secret key for the primary provider.
-- `AI Base URL` — optional API root; required for `openai_compatible`.
-- `AI Audio Provider` — optional voice-only provider override.
-- `AI Audio Model` — optional voice/transcription model override.
-- `AI Audio API Key` — optional voice-only secret; blank falls back to the primary key.
-- `AI Audio Base URL` — optional voice-only API root.
-
-`AI Provider` accepts `openai`, `anthropic`/`claude`, `gemini`/`google`, and `openai_compatible`. `AI Model` is the exact provider model ID and has no n8n default. Different account/page rows can use completely different providers, models, keys, and base URLs.
-
-For voice messages, the audio override is useful when the primary provider/model cannot accept audio. For example an Anthropic page can use Anthropic for text/image and Gemini or an OpenAI transcription model for `VOICE_TRANSCRIPTION`.
-
-Provider secrets are synced from the restricted Control Spreadsheet into PostgreSQL. The n8n runtime sends only `accountId`, prompt, and input media to the internal `ai-gateway`; it does not include the provider secret in workflow payloads. Blank secret cells preserve the already stored secret, matching the existing Meta-token behavior.
