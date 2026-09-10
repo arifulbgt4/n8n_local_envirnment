@@ -8,9 +8,9 @@ Use `Product Group ID` for the parent product and `Variant ID` for a sellable co
 
 ## Images
 
-`Product Image` and `Image 2..5` accept HTTPS URLs or `=IMAGE("https://...")`.
+`Product Image` and `Image 2..10` accept HTTPS URLs or `=IMAGE("https://...")`.
 
-For images inserted directly into Google Sheets cells or over the grid, bind `integrations/google-apps-script/PRODUCT_IMAGE_SYNC.gs` to the Operations Spreadsheet and run `installProductImageSyncTriggers()` once. It writes durable URLs into `Resolved Image 1..5`, stores Drive file IDs/hashes in technical columns, and trashes old Drive copies when an image is replaced or deleted.
+For images inserted directly into Google Sheets cells or over the grid, bind `integrations/google-apps-script/PRODUCT_IMAGE_SYNC.gs` to the Operations Spreadsheet and run `installProductImageSyncTriggers()` once. It writes durable URLs into `Resolved Image 1..10`, stores Drive file IDs/hashes in technical columns, and trashes old Drive copies when an image is replaced or deleted.
 
 If a Google Workspace policy blocks `ANYONE_WITH_LINK`, Meta cannot fetch a Drive-hosted image. Use public CDN/storage URLs instead.
 
@@ -36,3 +36,10 @@ Product images are pre-warmed by catalog sync into the Docker named volume `n8n_
 For Facebook, the first successful send creates a reusable Meta `attachment_id`, stored in `product_media.facebook_attachment_id`. Later requests use that attachment ID directly, avoiding Google Drive downloads and repeated binary uploads. If Meta rejects the cached ID, the service falls back to the persistent local file/source URL, uploads a fresh reusable attachment, sends it, and returns the new ID for PostgreSQL persistence.
 
 Do not run `docker compose down -v` during normal restarts; that deletes the persistent product media cache volume.
+
+
+## Screenshot lookup and multiple Messenger images
+
+When a customer sends a product screenshot/photo, the messaging workflow sends the binary image to the account's `IMAGE_PRODUCT_ANALYSIS` AI configuration, builds a compact product-search query from the analysis, and forces the result through the product-search path. The normal product answer therefore uses the matched PostgreSQL catalog rather than treating the screenshot as a generic message.
+
+A product can keep up to 10 ordered media rows (`Product Image`, `Image 2..10`). Requests such as “more images”, “couple of images”, “3 pictures”, “কয়েকটা ছবি”, or “সবগুলো ছবি” resolve against the currently selected product. The workflow loads the requested number of active `product_media` rows (maximum 10) and sends them to Messenger one at a time through an explicit `SplitInBatches` loop. This avoids collapsing a multi-image request into a single outgoing image and preserves the existing Facebook attachment cache for every image.

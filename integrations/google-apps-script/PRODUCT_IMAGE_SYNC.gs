@@ -12,7 +12,7 @@
  */
 
 const PRODUCT_SHEET = 'Products';
-const SCRIPT_VERSION = '4.2-products-v5-grid-borders';
+const SCRIPT_VERSION = '4.2-products-v6-ten-images';
 const BACKUP_RECOVERY_KEY = 'PRODUCT_BACKUP_RECOVERY_DONE_V4';
 const IMAGE_REGISTRY_KEY = 'PRODUCT_IMAGE_FILE_REGISTRY_V3';
 
@@ -34,6 +34,11 @@ const PRODUCT_COLUMNS = [
   'Image 3',
   'Image 4',
   'Image 5',
+  'Image 6',
+  'Image 7',
+  'Image 8',
+  'Image 9',
+  'Image 10',
   'Product URL',
   'Offer',
   'Discount',
@@ -45,10 +50,10 @@ const PRODUCT_COLUMNS = [
   'Updated At'
 ];
 
-const IMAGE_HEADERS = ['Product Image', 'Image 2', 'Image 3', 'Image 4', 'Image 5'];
-const RESOLVED_HEADERS = ['Resolved Image 1', 'Resolved Image 2', 'Resolved Image 3', 'Resolved Image 4', 'Resolved Image 5'];
-const FILE_ID_HEADERS = ['_Image File ID 1', '_Image File ID 2', '_Image File ID 3', '_Image File ID 4', '_Image File ID 5'];
-const HASH_HEADERS = ['_Image Hash 1', '_Image Hash 2', '_Image Hash 3', '_Image Hash 4', '_Image Hash 5'];
+const IMAGE_HEADERS = ['Product Image', 'Image 2', 'Image 3', 'Image 4', 'Image 5', 'Image 6', 'Image 7', 'Image 8', 'Image 9', 'Image 10'];
+const RESOLVED_HEADERS = ['Resolved Image 1', 'Resolved Image 2', 'Resolved Image 3', 'Resolved Image 4', 'Resolved Image 5', 'Resolved Image 6', 'Resolved Image 7', 'Resolved Image 8', 'Resolved Image 9', 'Resolved Image 10'];
+const FILE_ID_HEADERS = ['_Image File ID 1', '_Image File ID 2', '_Image File ID 3', '_Image File ID 4', '_Image File ID 5', '_Image File ID 6', '_Image File ID 7', '_Image File ID 8', '_Image File ID 9', '_Image File ID 10'];
+const HASH_HEADERS = ['_Image Hash 1', '_Image Hash 2', '_Image Hash 3', '_Image Hash 4', '_Image Hash 5', '_Image Hash 6', '_Image Hash 7', '_Image Hash 8', '_Image Hash 9', '_Image Hash 10'];
 const TECHNICAL_HEADERS = [...RESOLVED_HEADERS, ...FILE_ID_HEADERS, ...HASH_HEADERS];
 
 const HEADER_ALIASES = {
@@ -63,6 +68,11 @@ const HEADER_ALIASES = {
   'Image 3': ['Image 3', 'Product Image 3', 'Photo 3', 'Picture 3'],
   'Image 4': ['Image 4', 'Product Image 4', 'Photo 4', 'Picture 4'],
   'Image 5': ['Image 5', 'Product Image 5', 'Photo 5', 'Picture 5'],
+  'Image 6': ['Image 6', 'Product Image 6', 'Photo 6', 'Picture 6'],
+  'Image 7': ['Image 7', 'Product Image 7', 'Photo 7', 'Picture 7'],
+  'Image 8': ['Image 8', 'Product Image 8', 'Photo 8', 'Picture 8'],
+  'Image 9': ['Image 9', 'Product Image 9', 'Photo 9', 'Picture 9'],
+  'Image 10': ['Image 10', 'Product Image 10', 'Photo 10', 'Picture 10'],
   'Product URL': ['Product URL', 'Product Link', 'URL', 'Link', 'Page URL', 'Product Page URL', 'Website URL', 'Facebook URL', 'Post URL', 'পণ্যের লিংক', 'প্রোডাক্ট লিংক', 'লিংক'],
   'Color': ['Color', 'Colour', 'Product Color', 'রং', 'কালার'],
   'Size': ['Size', 'Sizes', 'Product Size', 'সাইজ'],
