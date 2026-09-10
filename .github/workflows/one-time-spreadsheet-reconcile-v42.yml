@@ -1,0 +1,349 @@
+name: One-time spreadsheet reconciliation V4.2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/one-time-spreadsheet-reconcile-v42.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch operations reconciliation and catalog error handling
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('.')
+          ops_path = root / 'workflows/modular/01C_OPERATIONS_INIT_V4_2.json'
+          cat_path = root / 'workflows/modular/02_CATALOG_SYNC_V4_2.json'
+
+          ops = json.loads(ops_path.read_text(encoding='utf-8'))
+          cat = json.loads(cat_path.read_text(encoding='utf-8'))
+
+          def node_by_name(data, name):
+              for n in data['nodes']:
+                  if n.get('name') == name:
+                      return n
+              raise KeyError(name)
+
+          def upsert_node(data, node):
+              for i, n in enumerate(data['nodes']):
+                  if n.get('name') == node['name']:
+                      data['nodes'][i] = node
+                      return
+              data['nodes'].append(node)
+
+          # ----------------------------
+          # 01C: per-account reconciliation
+          # ----------------------------
+          load = node_by_name(ops, '04.01 - Load Active Accounts for Spreadsheet Init')
+          load['parameters']['query'] = """SELECT ba.*,b.business_name,
+ (SELECT value FROM system_settings WHERE key='control_spreadsheet_id') AS control_spreadsheet_id,
+ (SELECT value FROM system_settings WHERE key=('ops_sheet_bound:'||ba.id::text)) AS last_bound_spreadsheet_id
+FROM business_accounts ba
+JOIN businesses b ON b.business_id=ba.business_id
+WHERE ba.active=TRUE AND b.active=TRUE
+ORDER BY ba.id;"""
+
+          meta = node_by_name(ops, '04.10 - Read Operations Spreadsheet Metadata')
+          meta['continueOnFail'] = True
+
+          norm = node_by_name(ops, '04.09 - Normalize Spreadsheet Init Context')
+          norm['parameters']['jsCode'] = """let x=$json;
+if(!x.operations_spreadsheet_id){try{x=$('04.06 - Restore Created Spreadsheet Context').item.json}catch(e){}}
+return [{json:{...x,skipAccount:!x.operations_spreadsheet_id}}];"""
+
+          build = node_by_name(ops, '04.11 - Build Missing Operations Tabs')
+          build['parameters']['jsCode'] = """const ctx=$('04.09 - Normalize Spreadsheet Init Context').item.json;
+if($json && $json.error){
+  return [{json:{...ctx,invalidSpreadsheet:true,spreadsheetError:String($json.error),missing:[],requests:[],headerData:[]}}];
+}
+const productHeaders=['Product ID','Product Name','Category','Subcategory','Price','Currency','Stock Qty','Stock Status','Color','Size','SKU','Product Description','Product Image','Image 2','Image 3','Image 4','Image 5','Product URL','Offer','Discount','Aliases','Active','Product Group ID','Variant ID','Variant Name','Updated At','Resolved Image 1','Resolved Image 2','Resolved Image 3','Resolved Image 4','Resolved Image 5','_Image File ID 1','_Image File ID 2','_Image File ID 3','_Image File ID 4','_Image File ID 5','_Image Hash 1','_Image Hash 2','_Image Hash 3','_Image Hash 4','_Image Hash 5'];
+const headers={
+  Products:productHeaders,
+  FAQ:['FAQ ID','Question','Answer','Category','Active','Updated At'],
+  Orders:['Order Number','Created At','Status','Customer Name','Phone','Address','Product','Quantity','Unit Price','Delivery Charge','Grand Total','Payment Method','Notes','Conversation ID'],
+  HumanSupportQueue:['Conversation ID','Business ID','Business Name','Platform','Account ID','Customer ID','Customer External ID','Latest Customer Message','Latest Message Time','Conversation URL','Mode','Handoff Reason','Handoff Source','Status','Updated At'],
+  HumanSupportLatest:['Conversation ID','Business ID','Business Name','Platform','Account ID','Customer ID','Customer External ID','Latest Customer Message','Latest Message Time','Conversation URL','Mode','Handoff Reason','Handoff Source','Status','Updated At'],
+  _System:['Key','Value','Updated At']
+};
+const existing=new Set(($json.sheets||[]).map(s=>s.properties?.title).filter(Boolean));
+const missing=Object.keys(headers).filter(t=>!existing.has(t));
+const data=missing.map(t=>({range:`${t}!A1`,majorDimension:'ROWS',values:[headers[t]]}));
+if(missing.includes('HumanSupportLatest')) data.push({range:'HumanSupportLatest!A2',majorDimension:'ROWS',values:[['=SORT(FILTER(HumanSupportQueue!A2:O,HumanSupportQueue!A2:A<>\"\"),15,FALSE)']]});
+if(missing.includes('_System')) data.push({range:'_System!A2',majorDimension:'ROWS',values:[['schema_version','4.2',new Date().toISOString()],['account_key',ctx.account_key,new Date().toISOString()]]});
+return [{json:{...ctx,invalidSpreadsheet:false,missing,requests:missing.map(title=>({addSheet:{properties:{title}}})),headerData:data}}];"""
+
+          upsert_node(ops, {
+              'parameters': {'batchSize': 1, 'options': {}},
+              'id': '041aa001-0000-4000-8000-000000000001',
+              'name': '04.01A - Loop Accounts',
+              'type': 'n8n-nodes-base.splitInBatches', 'typeVersion': 3,
+              'position': [-2660, 700]
+          })
+          upsert_node(ops, {
+              'parameters': {'conditions': {'options': {'caseSensitive': True, 'leftValue': '', 'typeValidation': 'strict'}, 'conditions': [{'id':'041aa009-0000-4000-8000-000000000009','leftValue':'={{ !!$json.operations_spreadsheet_id && !$json.skipAccount }}','rightValue':True,'operator':{'type':'boolean','operation':'true','singleValue':True}}], 'combinator':'and'}, 'options': {}},
+              'id':'041aa009-0000-4000-8000-000000000009','name':'04.09A - Has Spreadsheet ID?','type':'n8n-nodes-base.if','typeVersion':2.2,'position':[-980,700]
+          })
+          upsert_node(ops, {
+              'parameters': {'jsCode': "return [{json:$('04.11 - Build Missing Operations Tabs').item.json}];"},
+              'id':'041aa014-0000-4000-8000-000000000014','name':'04.14A - Restore Reconciliation Context','type':'n8n-nodes-base.code','typeVersion':2,'position':[340,700]
+          })
+          upsert_node(ops, {
+              'parameters': {'conditions': {'options': {'caseSensitive': True, 'leftValue': '', 'typeValidation': 'strict'}, 'conditions': [{'id':'041aa014-0000-4000-8000-000000000015','leftValue':'={{ !$json.invalidSpreadsheet }}','rightValue':True,'operator':{'type':'boolean','operation':'true','singleValue':True}}], 'combinator':'and'}, 'options': {}},
+              'id':'041aa014-0000-4000-8000-000000000015','name':'04.14B - Spreadsheet Available?','type':'n8n-nodes-base.if','typeVersion':2.2,'position':[560,700]
+          })
+          upsert_node(ops, {
+              'parameters': {'operation':'executeQuery','query':"""SELECT $4::jsonb AS ctx,
+ (SELECT COUNT(*)::int FROM products WHERE account_id=$1::bigint) AS product_count,
+ (SELECT COUNT(*)::int FROM knowledge_base WHERE account_id=$1::bigint) AS faq_count,
+ (SELECT COUNT(*)::int FROM orders WHERE account_id=$1::bigint) AS order_count,
+ ((SELECT COUNT(*) FROM products WHERE account_id=$1::bigint)+(SELECT COUNT(*) FROM knowledge_base WHERE account_id=$1::bigint)+(SELECT COUNT(*) FROM orders WHERE account_id=$1::bigint)>0) AS db_has_data,
+ (COALESCE($2::text,'')<>COALESCE($3::text,'') OR $5::boolean) AS needs_reconcile;""",'options':{'queryReplacement':"={{ [$json.id,$json.last_bound_spreadsheet_id,$json.operations_spreadsheet_id,JSON.stringify($json),Array.isArray($json.missing)&&$json.missing.length>0] }}"}},
+              'id':'041aa015-0000-4000-8000-000000000015','name':'04.15 - Inspect Account Database State','type':'n8n-nodes-base.postgres','typeVersion':2.6,'position':[780,700]
+          })
+          upsert_node(ops, {
+              'parameters': {'conditions': {'options': {'caseSensitive': True, 'leftValue': '', 'typeValidation': 'strict'}, 'conditions': [{'id':'041aa016-0000-4000-8000-000000000016','leftValue':'={{ $json.needs_reconcile }}','rightValue':True,'operator':{'type':'boolean','operation':'true','singleValue':True}}], 'combinator':'and'}, 'options': {}},
+              'id':'041aa016-0000-4000-8000-000000000016','name':'04.16 - Reconciliation Needed?','type':'n8n-nodes-base.if','typeVersion':2.2,'position':[1000,700]
+          })
+          upsert_node(ops, {
+              'parameters': {'conditions': {'options': {'caseSensitive': True, 'leftValue': '', 'typeValidation': 'strict'}, 'conditions': [{'id':'041aa017-0000-4000-8000-000000000017','leftValue':'={{ $json.db_has_data }}','rightValue':True,'operator':{'type':'boolean','operation':'true','singleValue':True}}], 'combinator':'and'}, 'options': {}},
+              'id':'041aa017-0000-4000-8000-000000000017','name':'04.17 - Database Has Managed Data?','type':'n8n-nodes-base.if','typeVersion':2.2,'position':[1220,700]
+          })
+
+          snapshot_sql = """SELECT $2::jsonb AS ctx,
+COALESCE((SELECT jsonb_agg(jsonb_build_object(
+ 'externalProductId',p.external_product_id,'productGroupId',COALESCE(p.product_group_id,''),'variantId',COALESCE(p.variant_id,''),'sku',COALESCE(p.sku,''),
+ 'name',p.name,'variantName',COALESCE(p.variant_name,''),'category',COALESCE(p.category,''),'subcategory',COALESCE(p.subcategory,''),
+ 'price',p.price,'currency',p.currency,'stockQty',p.stock_qty,'stockStatus',COALESCE(p.stock_status,''),'color',COALESCE(p.color,''),'size',COALESCE(p.size,''),
+ 'description',COALESCE(p.description,''),'summary',COALESCE(p.ai_summary,''),'productUrl',COALESCE(p.product_url,''),'imageUrl',COALESCE(p.image_url,''),
+ 'offer',COALESCE(p.offer,''),'discount',COALESCE(p.discount,''),'aliases',COALESCE(p.aliases,''),'active',p.active,'updatedAt',p.updated_at,
+ 'media',COALESCE((SELECT jsonb_agg(pm.resolved_url ORDER BY pm.sort_order) FROM product_media pm WHERE pm.product_id=p.id AND pm.active=TRUE AND COALESCE(pm.resolved_url,'')<>''),'[]'::jsonb)
+) ORDER BY p.id) FROM products p WHERE p.account_id=$1::bigint),'[]'::jsonb) AS products,
+COALESCE((SELECT jsonb_agg(jsonb_build_object('key',k.external_key,'question',COALESCE(k.question,''),'answer',k.answer,'category',COALESCE(k.category,''),'active',k.active,'updatedAt',k.updated_at) ORDER BY k.id) FROM knowledge_base k WHERE k.account_id=$1::bigint),'[]'::jsonb) AS faqs,
+COALESCE((SELECT jsonb_agg(jsonb_build_object(
+ 'orderNumber',o.order_number,'createdAt',o.created_at,'status',o.status,'customerName',COALESCE(o.customer_name,''),'phone',COALESCE(o.phone,''),'address',COALESCE(o.address,''),
+ 'product',COALESCE((SELECT string_agg(oi.product_name,', ' ORDER BY oi.id) FROM order_items oi WHERE oi.order_id=o.id),''),
+ 'quantity',COALESCE((SELECT SUM(oi.quantity) FROM order_items oi WHERE oi.order_id=o.id),0),
+ 'unitPrice',COALESCE((SELECT MAX(oi.unit_price) FROM order_items oi WHERE oi.order_id=o.id),0),
+ 'deliveryCharge',o.delivery_charge,'grandTotal',o.total,'paymentMethod',COALESCE(o.payment_method,''),'notes',COALESCE(o.note,''),'conversationId',''
+) ORDER BY o.created_at,o.id) FROM orders o WHERE o.account_id=$1::bigint),'[]'::jsonb) AS orders;"""
+          upsert_node(ops, {
+              'parameters': {'operation':'executeQuery','query':snapshot_sql,'options':{'queryReplacement':"={{ [$json.ctx.id,JSON.stringify($json.ctx)] }}"}},
+              'id':'041aa018-0000-4000-8000-000000000018','name':'04.18 - Load Database Snapshot','type':'n8n-nodes-base.postgres','typeVersion':2.6,'position':[1460,560]
+          })
+
+          build_snapshot_js = """const ctx=$json.ctx||{};
+const productHeaders=['Product ID','Product Name','Category','Subcategory','Price','Currency','Stock Qty','Stock Status','Color','Size','SKU','Product Description','Product Image','Image 2','Image 3','Image 4','Image 5','Product URL','Offer','Discount','Aliases','Active','Product Group ID','Variant ID','Variant Name','Updated At','Resolved Image 1','Resolved Image 2','Resolved Image 3','Resolved Image 4','Resolved Image 5','_Image File ID 1','_Image File ID 2','_Image File ID 3','_Image File ID 4','_Image File ID 5','_Image Hash 1','_Image Hash 2','_Image Hash 3','_Image Hash 4','_Image Hash 5'];
+const faqHeaders=['FAQ ID','Question','Answer','Category','Active','Updated At'];
+const orderHeaders=['Order Number','Created At','Status','Customer Name','Phone','Address','Product','Quantity','Unit Price','Delivery Charge','Grand Total','Payment Method','Notes','Conversation ID'];
+const products=Array.isArray($json.products)?$json.products:[];
+const faqs=Array.isArray($json.faqs)?$json.faqs:[];
+const orders=Array.isArray($json.orders)?$json.orders:[];
+const prows=products.map(p=>{const m=Array.isArray(p.media)?p.media:[];const imgs=[0,1,2,3,4].map(i=>m[i]||'');return [p.externalProductId||'',p.name||'',p.category||'',p.subcategory||'',p.price??'',p.currency||'BDT',p.stockQty??'',p.stockStatus||'',p.color||'',p.size||'',p.sku||'',p.description||'',...imgs,p.productUrl||'',p.offer||'',p.discount||'',p.aliases||'',p.active!==false,p.productGroupId||'',p.variantId||'',p.variantName||'',p.updatedAt||new Date().toISOString(),...imgs,'','','','','','','','','',''];});
+const frows=faqs.map(f=>[f.key||'',f.question||'',f.answer||'',f.category||'',f.active!==false,f.updatedAt||new Date().toISOString()]);
+const orows=orders.map(o=>[o.orderNumber||'',o.createdAt||'',o.status||'NEW',o.customerName||'',o.phone||'',o.address||'',o.product||'',o.quantity??'',o.unitPrice??'',o.deliveryCharge??0,o.grandTotal??0,o.paymentMethod||'',o.notes||'',o.conversationId||'']);
+return [{json:{...ctx,snapshotData:[{range:'Products!A1',majorDimension:'ROWS',values:[productHeaders,...prows]},{range:'FAQ!A1',majorDimension:'ROWS',values:[faqHeaders,...frows]},{range:'Orders!A1',majorDimension:'ROWS',values:[orderHeaders,...orows]}]}}];"""
+          upsert_node(ops, {
+              'parameters': {'jsCode':build_snapshot_js},'id':'041aa019-0000-4000-8000-000000000019','name':'04.19 - Build Database to Sheet Payload','type':'n8n-nodes-base.code','typeVersion':2,'position':[1680,560]
+          })
+          upsert_node(ops, {
+              'parameters': {'method':'POST','url':"={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $json.operations_spreadsheet_id + '/values:batchClear' }}",'authentication':'predefinedCredentialType','nodeCredentialType':'googleSheetsOAuth2Api','sendBody':True,'specifyBody':'json','jsonBody':"={{ {ranges:['Products!A:AO','FAQ!A:Z','Orders!A:Z']} }}",'options':{}},
+              'id':'041aa020-0000-4000-8000-000000000020','name':'04.20 - Clear Managed Tabs Before Database Restore','type':'n8n-nodes-base.httpRequest','typeVersion':4.2,'position':[1900,560]
+          })
+          upsert_node(ops, {
+              'parameters': {'method':'POST','url':"={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $('04.19 - Build Database to Sheet Payload').item.json.operations_spreadsheet_id + '/values:batchUpdate' }}",'authentication':'predefinedCredentialType','nodeCredentialType':'googleSheetsOAuth2Api','sendBody':True,'specifyBody':'json','jsonBody':"={{ {valueInputOption:'USER_ENTERED',data:$('04.19 - Build Database to Sheet Payload').item.json.snapshotData} }}",'options':{}},
+              'id':'041aa021-0000-4000-8000-000000000021','name':'04.21 - Restore Database Snapshot to Spreadsheet','type':'n8n-nodes-base.httpRequest','typeVersion':4.2,'position':[2120,560]
+          })
+          upsert_node(ops, {
+              'parameters': {'jsCode':"return [{json:$('04.19 - Build Database to Sheet Payload').item.json}];"},'id':'041aa021-0000-4000-8000-000000000022','name':'04.21A - Restore Database Reconcile Context','type':'n8n-nodes-base.code','typeVersion':2,'position':[2340,560]
+          })
+
+          upsert_node(ops, {
+              'parameters': {'url':"={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $json.ctx.operations_spreadsheet_id + '/values:batchGet?ranges=' + encodeURIComponent('Products!A:AO') + '&ranges=' + encodeURIComponent('FAQ!A:Z') + '&ranges=' + encodeURIComponent('Orders!A:Z') + '&majorDimension=ROWS' }}",'authentication':'predefinedCredentialType','nodeCredentialType':'googleSheetsOAuth2Api','options':{}},
+              'id':'041aa023-0000-4000-8000-000000000023','name':'04.23 - Read New Spreadsheet Seed Data','type':'n8n-nodes-base.httpRequest','typeVersion':4.2,'position':[1460,840]
+          })
+
+          seed_js = """const state=$('04.15 - Inspect Account Database State').item.json;const ctx=state.ctx||{};
+const ranges=Array.isArray($json.valueRanges)?$json.valueRanges:[];
+const findVals=(name)=>{const r=ranges.find(x=>String(x.range||'').replace(/'/g,'').startsWith(name+'!'));return r?.values||[];};
+const objects=(vals)=>{if(!vals.length)return[];const h=vals[0].map(v=>String(v||'').trim());return vals.slice(1).map(r=>Object.fromEntries(h.map((k,i)=>[k,r[i]??''])));};
+const num=v=>{if(v===null||v===undefined||v==='')return null;const n=Number(String(v).replace(/[,৳₹$€£\s]/g,''));return Number.isFinite(n)?n:null;};
+const bool=(v,d=true)=>v===''||v===null||v===undefined?d:!['false','0','no','off','inactive','disabled'].includes(String(v).trim().toLowerCase());
+const cleanUrl=v=>{const s=String(v||'').trim();const m=s.match(/^=IMAGE\(\s*[\"']([^\"']+)[\"']/i);return m?m[1]:s;};
+const val=(r,...keys)=>{for(const k of keys){if(r[k]!==undefined&&r[k]!==null&&String(r[k]).trim()!=='')return r[k];}return '';};
+const products=[];
+for(const r of objects(findVals('Products'))){const name=String(val(r,'Product Name','Name','Product','Title')).trim();if(!name)continue;const desc=String(val(r,'Product Description','Description','Details')).trim();let category=String(val(r,'Category','Product Category','Type')).trim();if(!category){const s=(name+' '+desc).toLowerCase();if(/শাড়ি|শাড়ি|saree|sari/.test(s))category='Saree';else if(/shirt|t-shirt|dress|পাঞ্জাবি|panjabi/.test(s))category='Clothing';else category='Uncategorized';}const group=String(val(r,'Product Group ID')).trim()||name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-|-$/g,'').slice(0,80)||'product';const productId=String(val(r,'Product ID','ID')).trim();const variant=String(val(r,'Variant ID')).trim()||productId||group;const media=[1,2,3,4,5].map(i=>cleanUrl(val(r,`Resolved Image ${i}`,i===1?'Product Image':`Image ${i}`))).filter(x=>/^https?:\/\//i.test(x));const price=num(val(r,'Price','Price (৳)','Selling Price'));const stockQty=num(val(r,'Stock Qty','Quantity','Qty'));const stockStatus=String(val(r,'Stock Status','Stock')).trim()||(stockQty===null?'':stockQty>0?'In Stock':'Out of Stock');const color=String(val(r,'Color')).trim(),size=String(val(r,'Size')).trim(),sku=String(val(r,'SKU','Product Code')).trim(),variantName=String(val(r,'Variant Name')).trim()||[color,size].filter(Boolean).join(' / ');const summary=[name,variantName,category,price!==null?`${price} ${String(val(r,'Currency')).trim()||'BDT'}`:'',desc].filter(Boolean).join(' | ').slice(0,1200);const aliases=String(val(r,'Aliases')).trim();const searchText=[name,variantName,group,variant,sku,category,color,size,desc,summary,aliases].filter(Boolean).join(' ').toLowerCase();const contentHash=Buffer.from(JSON.stringify({group,variant,sku,name,price,stockQty,stockStatus,color,size,desc,media,aliases})).toString('base64').slice(0,180);products.push({external_product_id:variant||productId||group,product_group_id:group,variant_id:variant,sku,name,variant_name:variantName,category,subcategory:String(val(r,'Subcategory')).trim(),price,currency:String(val(r,'Currency')).trim()||'BDT',stock_qty:stockQty,stock_status:stockStatus,color,size,description:desc,summary,product_url:String(val(r,'Product URL','URL','Link')).trim(),image_url:media[0]||'',offer:String(val(r,'Offer')).trim(),discount:String(val(r,'Discount')).trim(),aliases,search_text:searchText,content_hash:contentHash,active:bool(val(r,'Active'),true),media});}
+const faqs=[];for(const r of objects(findVals('FAQ'))){const answer=String(val(r,'Answer','Response')).trim();if(!answer)continue;const q=String(val(r,'Question','FAQ','Query')).trim();const key=String(val(r,'FAQ ID','ID','Key')).trim()||Buffer.from((q+'|'+answer).toLowerCase()).toString('base64').slice(0,80);const category=String(val(r,'Category')).trim();faqs.push({external_key:key,question:q,answer,category,search_text:[q,answer,category].join(' ').toLowerCase(),content_hash:Buffer.from(JSON.stringify({q,answer,category})).toString('base64').slice(0,180),active:bool(val(r,'Active'),true)});}
+const orders=[];let oi=0;for(const r of objects(findVals('Orders'))){oi++;const product=String(val(r,'Product','Product Name')).trim();const phone=String(val(r,'Phone','Mobile')).trim();const customerName=String(val(r,'Customer Name','Name')).trim();let orderNumber=String(val(r,'Order Number','Order ID','ID')).trim();if(!orderNumber)orderNumber=`IMPORT-${ctx.id}-${Buffer.from([phone,customerName,product,oi].join('|')).toString('hex').slice(0,16)}`;const rawDate=String(val(r,'Created At','Date')).trim();const d=rawDate&&Number.isFinite(Date.parse(rawDate))?new Date(rawDate).toISOString():'';orders.push({order_number:orderNumber,created_at:d,status:String(val(r,'Status')).trim()||'NEW',customer_name:customerName,phone,address:String(val(r,'Address')).trim(),product,quantity:num(val(r,'Quantity','Qty'))||1,unit_price:num(val(r,'Unit Price','Price'))||0,delivery_charge:num(val(r,'Delivery Charge'))||0,grand_total:num(val(r,'Grand Total','Total'))||0,payment_method:String(val(r,'Payment Method')).trim(),note:String(val(r,'Notes','Note')).trim(),customer_external_id:phone?`sheet:${phone}`:`sheet-order:${orderNumber}`});}
+return [{json:{...ctx,seedProducts:products,seedFaqs:faqs,seedOrders:orders}}];"""
+          upsert_node(ops, {
+              'parameters': {'jsCode':seed_js},'id':'041aa024-0000-4000-8000-000000000024','name':'04.24 - Normalize Spreadsheet Seed Data','type':'n8n-nodes-base.code','typeVersion':2,'position':[1680,840]
+          })
+
+          seed_sql = """WITH ps AS (
+ SELECT * FROM jsonb_to_recordset($3::jsonb) AS x(external_product_id text,product_group_id text,variant_id text,sku text,name text,variant_name text,category text,subcategory text,price numeric,currency text,stock_qty int,stock_status text,color text,size text,description text,summary text,product_url text,image_url text,offer text,discount text,aliases text,search_text text,content_hash text,active boolean,media jsonb)
+), pu AS (
+ INSERT INTO products(business_id,account_id,external_product_id,product_group_id,variant_id,sku,name,variant_name,category,subcategory,price,currency,stock_qty,stock_status,color,size,description,ai_summary,attributes_json,product_url,image_url,offer,discount,aliases,search_text,content_hash,active,updated_at)
+ SELECT $1,$2::bigint,external_product_id,product_group_id,variant_id,sku,name,variant_name,category,subcategory,price,COALESCE(NULLIF(currency,''),'BDT'),stock_qty,stock_status,color,size,description,summary,'{}'::jsonb,product_url,image_url,offer,discount,aliases,search_text,content_hash,COALESCE(active,TRUE),NOW() FROM ps
+ ON CONFLICT(account_id,external_product_id) DO UPDATE SET product_group_id=EXCLUDED.product_group_id,variant_id=EXCLUDED.variant_id,sku=EXCLUDED.sku,name=EXCLUDED.name,variant_name=EXCLUDED.variant_name,category=EXCLUDED.category,subcategory=EXCLUDED.subcategory,price=EXCLUDED.price,currency=EXCLUDED.currency,stock_qty=EXCLUDED.stock_qty,stock_status=EXCLUDED.stock_status,color=EXCLUDED.color,size=EXCLUDED.size,description=EXCLUDED.description,ai_summary=EXCLUDED.ai_summary,product_url=EXCLUDED.product_url,image_url=EXCLUDED.image_url,offer=EXCLUDED.offer,discount=EXCLUDED.discount,aliases=EXCLUDED.aliases,search_text=EXCLUDED.search_text,content_hash=EXCLUDED.content_hash,active=EXCLUDED.active,updated_at=NOW() RETURNING id
+), md AS (
+ DELETE FROM product_media pm USING products p WHERE pm.product_id=p.id AND p.account_id=$2::bigint RETURNING pm.id
+), mi AS (
+ INSERT INTO product_media(product_id,media_key,source_type,source_ref,resolved_url,sort_order,active,updated_at)
+ SELECT p.id,'image-'||m.ord::text,'url',m.url,m.url,m.ord::int,TRUE,NOW() FROM ps s JOIN products p ON p.account_id=$2::bigint AND p.external_product_id=s.external_product_id CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(s.media,'[]'::jsonb)) WITH ORDINALITY m(url,ord)
+ ON CONFLICT(product_id,media_key) DO UPDATE SET source_ref=EXCLUDED.source_ref,resolved_url=EXCLUDED.resolved_url,sort_order=EXCLUDED.sort_order,active=TRUE,updated_at=NOW() RETURNING product_id
+) SELECT 1;
+WITH fs AS (SELECT * FROM jsonb_to_recordset($4::jsonb) AS x(external_key text,question text,answer text,category text,search_text text,content_hash text,active boolean))
+INSERT INTO knowledge_base(business_id,account_id,external_key,question,answer,category,search_text,content_hash,active,updated_at)
+SELECT $1,$2::bigint,external_key,question,answer,category,search_text,content_hash,COALESCE(active,TRUE),NOW() FROM fs
+ON CONFLICT(account_id,external_key) DO UPDATE SET question=EXCLUDED.question,answer=EXCLUDED.answer,category=EXCLUDED.category,search_text=EXCLUDED.search_text,content_hash=EXCLUDED.content_hash,active=EXCLUDED.active,updated_at=NOW();
+WITH os AS (SELECT * FROM jsonb_to_recordset($5::jsonb) AS x(order_number text,created_at text,status text,customer_name text,phone text,address text,product text,quantity int,unit_price numeric,delivery_charge numeric,grand_total numeric,payment_method text,note text,customer_external_id text)), cs AS (
+ SELECT DISTINCT ON (customer_external_id) customer_external_id,customer_name,phone FROM os WHERE COALESCE(customer_external_id,'')<>'' ORDER BY customer_external_id
+)
+INSERT INTO customers(business_id,account_id,platform,external_user_id,name,phone,updated_at)
+SELECT $1,$2::bigint,(SELECT platform FROM business_accounts WHERE id=$2::bigint),customer_external_id,customer_name,phone,NOW() FROM cs
+ON CONFLICT(account_id,external_user_id) DO UPDATE SET name=COALESCE(NULLIF(EXCLUDED.name,''),customers.name),phone=COALESCE(NULLIF(EXCLUDED.phone,''),customers.phone),updated_at=NOW();
+WITH os AS (SELECT * FROM jsonb_to_recordset($5::jsonb) AS x(order_number text,created_at text,status text,customer_name text,phone text,address text,product text,quantity int,unit_price numeric,delivery_charge numeric,grand_total numeric,payment_method text,note text,customer_external_id text))
+INSERT INTO orders(order_number,customer_id,business_id,account_id,status,customer_name,phone,address,payment_method,note,subtotal,delivery_charge,total,created_at,updated_at)
+SELECT o.order_number,c.id,$1,$2::bigint,COALESCE(NULLIF(o.status,''),'NEW'),o.customer_name,o.phone,o.address,o.payment_method,o.note,GREATEST(COALESCE(o.grand_total,0)-COALESCE(o.delivery_charge,0),0),COALESCE(o.delivery_charge,0),COALESCE(o.grand_total,0),COALESCE(NULLIF(o.created_at,'')::timestamptz,NOW()),NOW()
+FROM os o JOIN customers c ON c.account_id=$2::bigint AND c.external_user_id=o.customer_external_id
+ON CONFLICT(order_number) DO UPDATE SET status=EXCLUDED.status,customer_name=EXCLUDED.customer_name,phone=EXCLUDED.phone,address=EXCLUDED.address,payment_method=EXCLUDED.payment_method,note=EXCLUDED.note,subtotal=EXCLUDED.subtotal,delivery_charge=EXCLUDED.delivery_charge,total=EXCLUDED.total,updated_at=NOW();
+WITH os AS (SELECT * FROM jsonb_to_recordset($5::jsonb) AS x(order_number text,created_at text,status text,customer_name text,phone text,address text,product text,quantity int,unit_price numeric,delivery_charge numeric,grand_total numeric,payment_method text,note text,customer_external_id text)), gone AS (
+ DELETE FROM order_items oi USING orders o,os s WHERE oi.order_id=o.id AND o.order_number=s.order_number RETURNING oi.id
+)
+INSERT INTO order_items(order_id,product_id,product_name,quantity,unit_price,total)
+SELECT o.id,(SELECT p.id FROM products p WHERE p.account_id=$2::bigint AND lower(p.name)=lower(s.product) ORDER BY p.id LIMIT 1),COALESCE(NULLIF(s.product,''),'Imported item'),GREATEST(COALESCE(s.quantity,1),1),COALESCE(s.unit_price,0),GREATEST(COALESCE(s.quantity,1),1)*COALESCE(s.unit_price,0)
+FROM os s JOIN orders o ON o.order_number=s.order_number WHERE COALESCE(s.product,'')<>'';
+SELECT $6::jsonb AS ctx;"""
+          upsert_node(ops, {
+              'parameters': {'operation':'executeQuery','query':seed_sql,'options':{'queryReplacement':"={{ [$json.business_id,$json.id,JSON.stringify($json.seedProducts||[]),JSON.stringify($json.seedFaqs||[]),JSON.stringify($json.seedOrders||[]),JSON.stringify($json)] }}"}},
+              'id':'041aa025-0000-4000-8000-000000000025','name':'04.25 - Import New Spreadsheet Seed to Database','type':'n8n-nodes-base.postgres','typeVersion':2.6,'position':[1900,840]
+          })
+          upsert_node(ops, {
+              'parameters': {'jsCode':"return [{json:$json.ctx||$json}];"},'id':'041aa025-0000-4000-8000-000000000026','name':'04.25A - Restore Seed Reconcile Context','type':'n8n-nodes-base.code','typeVersion':2,'position':[2120,840]
+          })
+          upsert_node(ops, {
+              'parameters': {'operation':'executeQuery','query':"""INSERT INTO system_settings(key,value,updated_at)
+VALUES('ops_sheet_bound:'||$1::text,$2,NOW())
+ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW();
+SELECT $3::jsonb AS ctx;""",'options':{'queryReplacement':"={{ [$json.id,$json.operations_spreadsheet_id,JSON.stringify($json)] }}"}},
+              'id':'041aa026-0000-4000-8000-000000000027','name':'04.26 - Mark Spreadsheet Reconciled','type':'n8n-nodes-base.postgres','typeVersion':2.6,'position':[2560,700]
+          })
+          upsert_node(ops, {
+              'parameters': {'rule': {'interval': [{'field':'minutes','minutesInterval':5}]}},'id':'041aa000-0000-4000-8000-000000000000','name':'PROD - Operations Spreadsheet Reconcile Schedule','type':'n8n-nodes-base.scheduleTrigger','typeVersion':1.2,'position':[-3000,980]
+          })
+
+          # Rebuild 01C connections deterministically.
+          ops['connections'] = {
+            '04 - INIT - Account Operations Spreadsheets': {'main': [[{'node':'04.01 - Load Active Accounts for Spreadsheet Init','type':'main','index':0}]]},
+            'PROD - Operations Spreadsheet Reconcile Schedule': {'main': [[{'node':'04.01 - Load Active Accounts for Spreadsheet Init','type':'main','index':0}]]},
+            '04.01 - Load Active Accounts for Spreadsheet Init': {'main': [[{'node':'04.01A - Loop Accounts','type':'main','index':0}]]},
+            '04.01A - Loop Accounts': {'main': [[],[{'node':'04.02 - Missing Operations Spreadsheet?','type':'main','index':0}]]},
+            '04.02 - Missing Operations Spreadsheet?': {'main': [[{'node':'04.03 - Create Operations Spreadsheet','type':'main','index':0}],[{'node':'04.08 - Existing Spreadsheet Context','type':'main','index':0}]]},
+            '04.03 - Create Operations Spreadsheet': {'main': [[{'node':'04.04 - Capture Created Spreadsheet','type':'main','index':0}]]},
+            '04.04 - Capture Created Spreadsheet': {'main': [[{'node':'04.05 - Persist Created Spreadsheet ID','type':'main','index':0}]]},
+            '04.05 - Persist Created Spreadsheet ID': {'main': [[{'node':'04.06 - Restore Created Spreadsheet Context','type':'main','index':0}]]},
+            '04.06 - Restore Created Spreadsheet Context': {'main': [[{'node':'04.07 - Write New Spreadsheet ID Back to Control','type':'main','index':0}]]},
+            '04.07 - Write New Spreadsheet ID Back to Control': {'main': [[{'node':'04.09 - Normalize Spreadsheet Init Context','type':'main','index':0}]]},
+            '04.08 - Existing Spreadsheet Context': {'main': [[{'node':'04.09 - Normalize Spreadsheet Init Context','type':'main','index':0}]]},
+            '04.09 - Normalize Spreadsheet Init Context': {'main': [[{'node':'04.09A - Has Spreadsheet ID?','type':'main','index':0}]]},
+            '04.09A - Has Spreadsheet ID?': {'main': [[{'node':'04.10 - Read Operations Spreadsheet Metadata','type':'main','index':0}],[{'node':'04.01A - Loop Accounts','type':'main','index':0}]]},
+            '04.10 - Read Operations Spreadsheet Metadata': {'main': [[{'node':'04.11 - Build Missing Operations Tabs','type':'main','index':0}]]},
+            '04.11 - Build Missing Operations Tabs': {'main': [[{'node':'04.11A - Any Missing Operations Tabs?','type':'main','index':0}]]},
+            '04.11A - Any Missing Operations Tabs?': {'main': [[{'node':'04.12 - Create Missing Operations Tabs','type':'main','index':0}],[{'node':'04.14A - Restore Reconciliation Context','type':'main','index':0}]]},
+            '04.12 - Create Missing Operations Tabs': {'main': [[{'node':'04.13 - Restore Header Context','type':'main','index':0}]]},
+            '04.13 - Restore Header Context': {'main': [[{'node':'04.14 - Write Operations Headers','type':'main','index':0}]]},
+            '04.14 - Write Operations Headers': {'main': [[{'node':'04.14A - Restore Reconciliation Context','type':'main','index':0}]]},
+            '04.14A - Restore Reconciliation Context': {'main': [[{'node':'04.14B - Spreadsheet Available?','type':'main','index':0}]]},
+            '04.14B - Spreadsheet Available?': {'main': [[{'node':'04.15 - Inspect Account Database State','type':'main','index':0}],[{'node':'04.01A - Loop Accounts','type':'main','index':0}]]},
+            '04.15 - Inspect Account Database State': {'main': [[{'node':'04.16 - Reconciliation Needed?','type':'main','index':0}]]},
+            '04.16 - Reconciliation Needed?': {'main': [[{'node':'04.17 - Database Has Managed Data?','type':'main','index':0}],[{'node':'04.01A - Loop Accounts','type':'main','index':0}]]},
+            '04.17 - Database Has Managed Data?': {'main': [[{'node':'04.18 - Load Database Snapshot','type':'main','index':0}],[{'node':'04.23 - Read New Spreadsheet Seed Data','type':'main','index':0}]]},
+            '04.18 - Load Database Snapshot': {'main': [[{'node':'04.19 - Build Database to Sheet Payload','type':'main','index':0}]]},
+            '04.19 - Build Database to Sheet Payload': {'main': [[{'node':'04.20 - Clear Managed Tabs Before Database Restore','type':'main','index':0}]]},
+            '04.20 - Clear Managed Tabs Before Database Restore': {'main': [[{'node':'04.21 - Restore Database Snapshot to Spreadsheet','type':'main','index':0}]]},
+            '04.21 - Restore Database Snapshot to Spreadsheet': {'main': [[{'node':'04.21A - Restore Database Reconcile Context','type':'main','index':0}]]},
+            '04.21A - Restore Database Reconcile Context': {'main': [[{'node':'04.26 - Mark Spreadsheet Reconciled','type':'main','index':0}]]},
+            '04.23 - Read New Spreadsheet Seed Data': {'main': [[{'node':'04.24 - Normalize Spreadsheet Seed Data','type':'main','index':0}]]},
+            '04.24 - Normalize Spreadsheet Seed Data': {'main': [[{'node':'04.25 - Import New Spreadsheet Seed to Database','type':'main','index':0}]]},
+            '04.25 - Import New Spreadsheet Seed to Database': {'main': [[{'node':'04.25A - Restore Seed Reconcile Context','type':'main','index':0}]]},
+            '04.25A - Restore Seed Reconcile Context': {'main': [[{'node':'04.26 - Mark Spreadsheet Reconciled','type':'main','index':0}]]},
+            '04.26 - Mark Spreadsheet Reconciled': {'main': [[{'node':'04.01A - Loop Accounts','type':'main','index':0}]]}
+          }
+
+          # ----------------------------
+          # 02 Catalog: tolerate missing optional sheets and skip invalid rows.
+          # ----------------------------
+          gp = node_by_name(cat, 'Get Products from Google Sheets')
+          gp['continueOnFail'] = True
+
+          np = node_by_name(cat, 'Normalize Product Row')
+          code = np['parameters']['jsCode']
+          if "row&&row.error" not in code:
+              code = code.replace("const row=$json;", "const row=$json;if(row&&row.error)return {json:{_skip:true,error:String(row.error)}};", 1)
+          code = code.replace("if(!name)return[];", "if(!name)return {json:{_skip:true,reason:'missing_product_name'}};")
+          np['parameters']['jsCode'] = code
+
+          nf = node_by_name(cat, 'Normalize FAQ Row')
+          code = nf['parameters']['jsCode']
+          if "row&&row.error" not in code:
+              code = code.replace("const row=$json;", "const row=$json;if(row&&row.error)return {json:{_skip:true,error:String(row.error)}};", 1)
+          code = code.replace("if(!a)return[];", "if(!a)return {json:{_skip:true,reason:'missing_faq_answer'}};")
+          nf['parameters']['jsCode'] = code
+
+          upsert_node(cat, {
+              'parameters': {'jsCode': 'return $input.all().filter(i=>!i.json?._skip);'},
+              'type':'n8n-nodes-base.code','typeVersion':2,'position':[-760,1380],
+              'id':'02cat-filter-products-v42','name':'Filter Valid Product Rows'
+          })
+          upsert_node(cat, {
+              'parameters': {'jsCode': 'return $input.all().filter(i=>!i.json?._skip);'},
+              'type':'n8n-nodes-base.code','typeVersion':2,'position':[-760,1600],
+              'id':'02cat-filter-faq-v42','name':'Filter Valid FAQ Rows'
+          })
+          cat['connections']['Normalize Product Row'] = {'main': [[{'node':'Filter Valid Product Rows','type':'main','index':0}]]}
+          cat['connections']['Filter Valid Product Rows'] = {'main': [[{'node':'Upsert Product Cache','type':'main','index':0}]]}
+          cat['connections']['Normalize FAQ Row'] = {'main': [[{'node':'Filter Valid FAQ Rows','type':'main','index':0}]]}
+          cat['connections']['Filter Valid FAQ Rows'] = {'main': [[{'node':'Upsert FAQ Cache','type':'main','index':0}]]}
+
+          # Validate critical invariants.
+          names = {n['name'] for n in ops['nodes']}
+          for required in ['04.01A - Loop Accounts','04.15 - Inspect Account Database State','04.18 - Load Database Snapshot','04.23 - Read New Spreadsheet Seed Data','04.26 - Mark Spreadsheet Reconciled']:
+              assert required in names, required
+          assert ops['connections']['04.17 - Database Has Managed Data?']['main'][0][0]['node'] == '04.18 - Load Database Snapshot'
+          assert ops['connections']['04.17 - Database Has Managed Data?']['main'][1][0]['node'] == '04.23 - Read New Spreadsheet Seed Data'
+          assert cat['connections']['Normalize FAQ Row']['main'][0][0]['node'] == 'Filter Valid FAQ Rows'
+          assert node_by_name(cat,'Get Products from Google Sheets').get('continueOnFail') is True
+
+          ops_path.write_text(json.dumps(ops, ensure_ascii=False, separators=(',', ':'))+'\n', encoding='utf-8')
+          cat_path.write_text(json.dumps(cat, ensure_ascii=False, separators=(',', ':'))+'\n', encoding='utf-8')
+          print('Patched 01C and 02 workflows successfully.')
+          PY
+
+      - name: Validate JSON
+        run: |
+          python3 -m json.tool workflows/modular/01C_OPERATIONS_INIT_V4_2.json >/dev/null
+          python3 -m json.tool workflows/modular/02_CATALOG_SYNC_V4_2.json >/dev/null
+
+      - name: Commit changes
+        run: |
+          if git diff --quiet -- workflows/modular/01C_OPERATIONS_INIT_V4_2.json workflows/modular/02_CATALOG_SYNC_V4_2.json; then
+            echo 'No changes required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add workflows/modular/01C_OPERATIONS_INIT_V4_2.json workflows/modular/02_CATALOG_SYNC_V4_2.json
+          git commit -m 'feat: reconcile replacement operation spreadsheets with database'
+          git push
