@@ -1,6 +1,10 @@
--- Runs only when the PostgreSQL Docker volume is created for the first time.
--- n8n uses database `n8n`; the AI application uses a separate database `agent_app`.
-CREATE DATABASE agent_app;
+\set ON_ERROR_STOP on
+-- Safe to run during first PostgreSQL volume initialization and on later Docker starts.
+-- n8n uses database `n8n`; the AI application uses the separate database `agent_app`.
+-- CREATE DATABASE cannot use IF NOT EXISTS, so psql \gexec executes it only when missing.
+SELECT 'CREATE DATABASE agent_app'
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'agent_app')
+\gexec
 \connect agent_app
 -- AI Customer Support & Order Management V4
 -- Application database: agent_app (separate from n8n's own database)

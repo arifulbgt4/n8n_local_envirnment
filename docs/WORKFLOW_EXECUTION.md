@@ -1,67 +1,55 @@
 # Exact n8n execution order
 
-After importing the workflow and binding credentials, use this order.
+All project Postgres nodes must use the `AI Agent PostgreSQL` credential whose database is exactly `agent_app`. n8n itself continues to use database `n8n` through `.env`.
 
-## 01 - RESET - Entire AI Agent Database (DEV ONLY)
+## Optional 00 - RESET - Agent App Database (DEV ONLY)
 
-Not required for normal upgrades. This is destructive to the dedicated `agent_app` database only.
+Workflow file: `workflows/modular/00_RESET_AGENT_APP_V4_2.json`.
 
-### Reset safety — V4.1 (env-free)
+Reset is not required for normal upgrades. It deletes/recreates only the AI Commerce schema inside `agent_app`; it never resets the n8n owner account, workflows or credentials.
 
-Step 01 no longer requires `$env`, `.env` reset flags, or any n8n environment-access setting.
+1. Attach the `AI Agent PostgreSQL` credential to `01.02 - Reset + Recreate agent_app Schema`.
+2. Open `01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)`.
+3. Temporarily change `CHANGE_ME__TYPE_RESET_AGENT_APP_DATABASE` to exactly `RESET_AGENT_APP_DATABASE`.
+4. Run `01 - RESET - Agent App Database (DEV ONLY)` from the manual trigger.
+5. After success, change the literal back to the invalid default and save.
 
-1. Open **`01.00 - Enter Reset Confirmation (EDIT BEFORE RESET)`**.
-2. Its default `reset_confirmation` value is intentionally invalid: `CHANGE_ME__TYPE_RESET_AI_AGENT_DATABASE`.
-3. Only when you really want the reset, temporarily change it to exactly: `RESET_AI_AGENT_DATABASE`.
-4. Execute **`01 - RESET - Entire AI Agent Database (DEV ONLY)`** so the confirmation value flows into the safety guard.
-5. `01.01 - Reset Safety Guard` validates the value before `01.02 - Drop + Recreate Application Database Schema` can run.
-6. After reset succeeds, change the confirmation field back to `CHANGE_ME__TYPE_RESET_AI_AGENT_DATABASE` and save the workflow.
+There are two safety layers: the n8n confirmation node and a PostgreSQL `current_database()='agent_app'` guard before `DROP SCHEMA`.
 
-Do **not** execute `01.01 - Reset Safety Guard` by itself. If it receives no valid confirmation input, it intentionally stops with a safe error and the database is not reset.
+## 01 - Setup / bootstrap
 
-## 02 - INSTALL - Bootstrap System
+Run `01_SETUP_CONFIG_V4_2.json`. Enter the Control Spreadsheet ID. Expected result: application schema is available and Control Spreadsheet configuration is initialized without destroying n8n state.
 
-Only runtime input: `Control Spreadsheet ID`.
+## 02 - Control Spreadsheet sync
 
-Expected result: DB schema exists, Control Spreadsheet ID is stored in `system_settings`, and control tabs/headers are created without deleting existing valid data.
+Run `01B_CONTROL_SYNC_V4_2.json` -> `03 - SYNC - Control Spreadsheet -> PostgreSQL`.
 
-## 03 - SYNC - Control Spreadsheet -> PostgreSQL
+This loads businesses, accounts, account prompts and dynamic AI provider/model configuration into `agent_app`.
 
-Read `01_BUSINESSES` and `02_ACCOUNTS`, validate rows, then upsert parent businesses and child platform accounts.
+## 03 - Operations Spreadsheet initialization/reconciliation
 
-## 04 - INIT - Account Operations Spreadsheets
+Run `01C_OPERATIONS_INIT_V4_2.json` -> `04 - INIT - Account Operations Spreadsheets`.
 
-For each active account, use its Operations Spreadsheet ID. If blank and `Auto Create Spreadsheet=TRUE`, create one and write the new ID back to `02_ACCOUNTS`. Ensure Products, FAQ, Orders, HumanSupportQueue, HumanSupportLatest, and _System exist.
+Missing Products/FAQ/Orders/support tabs are created. If the database already contains managed account data, DB state restores into a changed Operations Spreadsheet. If managed DB data is zero, the spreadsheet seeds the database.
 
-## 05 - SYNC - Products + FAQ Catalog
+## 04 - Product + FAQ catalog sync
 
-For each account, recognized legacy Products sheets are backed up, normalized to the canonical columns, deterministically categorized, deduplicated, and sorted. Then Products + FAQ sync into PostgreSQL. Prices remain source-controlled and are never guessed.
+Run `02_CATALOG_SYNC_V4_2.json` -> catalog sync. Products, variants and up to ten product images are reconciled into PostgreSQL.
 
-## 06 - SYNC - Human Control From Sheets
+## 05 - Human control
 
-Read HumanSupportQueue rows. `Mode=HUMAN` disables AI; `Mode=AI` resumes AI and resolves pending handoff state.
+Run/import `03_HUMAN_CONTROL_V4_2.json` and verify HumanSupportQueue synchronization.
 
-## 07 - TEST - System Health
+## 06 - Health
 
-Checks installation ID, active accounts, spreadsheet IDs, products, FAQ rows, and unresolved HUMAN conversations.
+Run `01D_SYSTEM_HEALTH_V4_2.json` and verify accounts, spreadsheet IDs, products and FAQ counts.
 
-## 08 - FOLLOW-UP - Manual Test
+## 07 - Follow-up
 
-Runs only due follow-ups using the same production guards. Do not send follow-ups in HUMAN mode.
+Run/import `04_FOLLOWUP_V4_2.json`. Follow-ups must not send while a conversation is in HUMAN mode.
 
-## Production triggers
+## 08 - Meta messaging
 
-After the setup tests pass, publish the workflow. Production triggers are labeled:
+Import/publish `05_META_MESSAGING_V4_2.json` only after credentials/configuration tests pass.
 
-- `PROD - Meta Webhook Verify GET`
-- `PROD - Meta Webhook POST`
-- `PROD - Control Config Sync Schedule`
-- `PROD - Catalog Sync Schedule`
-- `PROD - Human Control Sync Schedule`
-- `PROD - Follow-up Schedule`
-
-<!-- V4.2-MODULAR-START -->
-## V4.2 modular import
-
-Use the five files in `workflows/modular/`. Run setup from `01_SETUP_CONFIG_V4_2.json`; catalog, human control, follow-up, and Meta runtime each live in their own workflow. Deactivate the old monolith before activating the new production schedules/webhooks.
-<!-- V4.2-MODULAR-END -->
+Production triggers include Meta webhook GET/POST, control sync, catalog sync, human-control sync and follow-up schedule. Do not activate duplicate copies of the same workflows.

@@ -1,49 +1,49 @@
-# n8n AI Customer Support & Order Management V4
+# n8n AI Commerce Automation V4.2
 
-This repository contains the local Docker environment, PostgreSQL schema, one importable n8n workflow, and complete setup documentation for a spreadsheet-driven AI customer-support and order-management system.
+Local Docker environment and modular n8n workflows for spreadsheet-driven Facebook/Instagram/WhatsApp customer support, product catalog, orders, AI prompts and dynamic AI providers.
 
-Active channels: **Facebook Messenger, Instagram, WhatsApp Cloud API**. TikTok, IMO, custom dashboard, and CRM are not part of this version.
+## Database isolation
 
-## Core installation rule
+A single PostgreSQL container hosts two separate databases:
 
-At system bootstrap, the **only business runtime input** is one empty **Control Google Spreadsheet ID**.
+```text
+n8n       -> n8n internal owner/workflow/credential/execution data
+agent_app -> AI Commerce application data only
+```
 
-After bootstrap, the Control Spreadsheet becomes the registry for every business/page/account. Each account row can point to its own Operations Spreadsheet containing `Products`, `FAQ`, `Orders`, `HumanSupportQueue`, `HumanSupportLatest`, and `_System`.
+`docker compose up -d` automatically creates/upgrades `agent_app` through the one-shot `agent-db-bootstrap` service, including when the PostgreSQL volume already existed. The n8n service waits for that bootstrap to succeed. See `docs/DATABASES_AND_DOCKER.md`.
 
-## Repository entry points
+## Quick start
 
-1. Read [`docs/INSTALLATION.md`](docs/INSTALLATION.md) on a fresh computer.
-2. Import [`workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json`](workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json) into n8n.
-3. Follow the exact numbered execution order in [`docs/WORKFLOW_EXECUTION.md`](docs/WORKFLOW_EXECUTION.md).
-4. Configure the Control Spreadsheet using [`docs/CONTROL_SPREADSHEET.md`](docs/CONTROL_SPREADSHEET.md).
-5. Configure Google OAuth using [`docs/GOOGLE_SETUP.md`](docs/GOOGLE_SETUP.md).
-6. Configure Meta using [`docs/META_SETUP.md`](docs/META_SETUP.md).
+```bash
+git clone https://github.com/arifulbgt4/n8n_local_envirnment.git
+cd n8n_local_envirnment
+cp .env.example .env
+# edit .env
+docker compose up -d
+```
 
-## Final numbered n8n actions
+Then open `http://localhost:5678`.
 
-- `01 - RESET - Entire AI Agent Database (DEV ONLY)`
-- `02 - INSTALL - Bootstrap System (ONLY input: Control Spreadsheet ID)`
-- `03 - SYNC - Control Spreadsheet -> PostgreSQL`
-- `04 - INIT - Account Operations Spreadsheets`
-- `05 - SYNC - Products + FAQ Catalog`
-- `06 - SYNC - Human Control From Sheets`
-- `07 - TEST - System Health`
-- `08 - FOLLOW-UP - Manual Test`
+For AI Commerce Postgres nodes create an n8n credential with `Host=postgres`, `Port=5432`, `Database=agent_app`, and the PostgreSQL username/password from `.env`. Never use the internal `n8n` database for project workflow nodes.
 
-Production triggers are separately labeled `PROD - ...`.
+## Documentation
 
-## Important behavior
+- `docs/INSTALLATION.md` — fresh-machine setup.
+- `docs/DATABASES_AND_DOCKER.md` — database isolation, verification and troubleshooting.
+- `workflows/modular/README.md` — modular import order.
+- `docs/WORKFLOW_EXECUTION.md` — manual setup/test order and safe reset.
+- `docs/CONTROL_SPREADSHEET.md` — businesses, accounts, AI prompts and model/provider registry.
+- `docs/GOOGLE_SETUP.md` — Google OAuth.
+- `docs/META_SETUP.md` — Meta configuration.
+- `docs/PRODUCT_CATALOG.md` — products and image/media sync.
 
-Human handoff is **silent**: when AI decides a customer genuinely needs a human, the conversation moves to HUMAN mode, the support queue is updated, and no automatic handoff acknowledgement is sent. While HUMAN, customer messages update the queue but do not call AI. A manual Facebook Page reply switches the conversation to HUMAN unless the echo message ID matches a bot/API outbound ID. Changing `Mode` to `AI` in `HumanSupportQueue` resumes AI.
+## Safe application reset
+
+`workflows/modular/00_RESET_AGENT_APP_V4_2.json` resets only `agent_app`. It has both an explicit confirmation gate and a database-name guard. It never resets n8n accounts/workflows/credentials.
+
+Do not use `docker compose down -v` for normal restarts because `-v` removes persistent volumes.
 
 ## Security
 
-The Control Spreadsheet can contain Meta access tokens because this design is intentionally spreadsheet-driven. Treat it as a secrets-bearing document: restrict sharing, enable account MFA, and rotate exposed tokens. Never commit real tokens, app secrets, Google credentials, database passwords, or `.env` to GitHub.
-
-<!-- V4.2-MODULAR-START -->
-## V4.2 modular workflow package
-
-For normal use, import the five files under `workflows/modular/` instead of opening the 170+ node monolith. This reduces editor-side memory/rendering pressure and isolates setup, catalog sync, human control, follow-ups, and Meta messaging. See `docs/MODULAR_WORKFLOWS.md` for the exact import/activation order.
-
-The legacy `workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json` remains available for compatibility, but should not be active at the same time as the modular workflows.
-<!-- V4.2-MODULAR-END -->
+The Control Spreadsheet can contain Meta access tokens and AI provider API keys. Restrict it to trusted administrators, use MFA, and never commit real `.env`, credentials, tokens or API secrets.

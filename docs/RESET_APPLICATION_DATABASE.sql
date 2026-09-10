@@ -1,4 +1,13 @@
 -- DANGEROUS: run only against the dedicated agent_app database.
+-- Hard safety guard: this script refuses to run against n8n or any other database.
+DO $agent_reset_guard$
+BEGIN
+  IF current_database() <> 'agent_app' THEN
+    RAISE EXCEPTION 'SAFETY STOP: connected database is %, expected agent_app. n8n was not modified.', current_database();
+  END IF;
+END
+$agent_reset_guard$;
+
 DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 GRANT ALL ON SCHEMA public TO PUBLIC;

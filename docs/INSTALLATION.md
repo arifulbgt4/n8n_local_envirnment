@@ -2,7 +2,7 @@
 
 ## 1. Install prerequisites
 
-Install Git and Docker Desktop (Windows/macOS) or Docker Engine + Compose plugin (Linux). Confirm:
+Install Git and Docker Desktop (Windows/macOS) or Docker Engine + Compose plugin (Linux):
 
 ```bash
 git --version
@@ -10,7 +10,7 @@ docker --version
 docker compose version
 ```
 
-## 2. Clone the repository
+## 2. Clone and configure
 
 ```bash
 git clone https://github.com/arifulbgt4/n8n_local_envirnment.git
@@ -18,79 +18,96 @@ cd n8n_local_envirnment
 cp .env.example .env
 ```
 
-Edit `.env`. At minimum change `POSTGRES_PASSWORD` and `N8N_ENCRYPTION_KEY`.
+Edit `.env`. At minimum replace `POSTGRES_PASSWORD`, `AGENT_DB_PASSWORD` with the same PostgreSQL password, and `N8N_ENCRYPTION_KEY`.
 
-## 3. Start PostgreSQL + n8n
+Keep the database split unchanged:
+
+```env
+POSTGRES_DB=n8n
+DB_POSTGRESDB_DATABASE=n8n
+AGENT_DB_NAME=agent_app
+```
+
+## 3. Start the complete stack
 
 ```bash
 docker compose up -d
 ```
 
-Open `http://localhost:5678` and create the n8n owner account.
+Startup order is enforced:
 
-The Docker init script creates two databases:
+```text
+postgres healthy
+      ↓
+agent-db-bootstrap -> creates/upgrades agent_app -> exits 0
+      ↓
+media-cache healthy
+      ↓
+n8n starts
+```
 
-- `n8n` - n8n internal state
-- `agent_app` - this project's customer/order/application data
+Open `http://localhost:5678` and create/login to the n8n owner account.
 
-## 4. Create n8n credentials once
+The same PostgreSQL container contains two databases: `n8n` for n8n itself and `agent_app` for this project. See `DATABASES_AND_DOCKER.md`.
 
-Create a Postgres credential named `AI Agent PostgreSQL`:
+## 4. Verify `agent_app`
+
+```bash
+docker compose ps
+docker exec -it n8n-postgres psql -U n8n -d postgres -c '\l'
+docker exec -it n8n-postgres psql -U n8n -d agent_app -c "SELECT current_database(), to_regclass('public.products');"
+```
+
+`agent-db-bootstrap` showing `Exited (0)` is normal. It is a one-shot initializer.
+
+## 5. Create n8n credentials
+
+Create Postgres credential `AI Agent PostgreSQL`:
 
 - Host: `postgres`
 - Port: `5432`
 - Database: `agent_app`
-- User: value of `POSTGRES_USER`
-- Password: value of `POSTGRES_PASSWORD`
+- User: `n8n` / your `POSTGRES_USER`
+- Password: your `POSTGRES_PASSWORD`
 - SSL: off for local Docker
 
-Create a Google Sheets OAuth2 credential as documented in `GOOGLE_SETUP.md`. Attach that same Google credential to every Google API HTTP Request node in the imported workflow.
+If n8n marks the credential red, first verify that the database field is exactly `agent_app` and run `docker compose logs agent-db-bootstrap`.
 
-Attach `AI Agent PostgreSQL` to every Postgres node.
+Create the Google Sheets OAuth2 credential as documented in `GOOGLE_SETUP.md`. Attach `AI Agent PostgreSQL` to all project Postgres nodes. Do not create a project credential pointing to database `n8n`.
 
-## 5. Import the workflow
+## 6. Import modular workflows
 
-Import:
+Import the JSON files under `workflows/modular/` following `workflows/modular/README.md`. `00_RESET_AGENT_APP_V4_2.json` is optional and should only be used intentionally in development.
 
-`workflows/AI_CUSTOMER_SUPPORT_V4_COMPLETE.json`
+## 7. Control Spreadsheet
 
-Do not publish yet. Bind the Postgres and Google credentials first.
+Create one blank Google Spreadsheet, copy its ID, then run setup. Do not manually create control tabs; the setup workflow creates them.
 
-## 6. Create one empty Control Spreadsheet
-
-Create one blank Google Spreadsheet in the Google account connected to n8n. Copy its ID from the URL.
-
-Do not manually create tabs. Step 02 creates them.
-
-## 7. Run numbered workflow steps
-
-Follow `WORKFLOW_EXECUTION.md` exactly.
+Follow `WORKFLOW_EXECUTION.md` for the execution order.
 
 ## 8. ngrok for local Meta callbacks
-
-Install ngrok, authenticate once, then run:
 
 ```bash
 ngrok http 5678
 ```
 
-Copy the HTTPS forwarding URL, set it in `.env`:
+Set the HTTPS URL in `.env`:
 
 ```env
 N8N_WEBHOOK_URL=https://YOUR-NGROK-DOMAIN/
 ```
 
-Restart n8n:
+Restart safely:
 
 ```bash
 docker compose down
 docker compose up -d
 ```
 
-Meta callback URL:
+Meta callback:
 
-`https://YOUR-NGROK-DOMAIN/webhook/meta-commerce`
+```text
+https://YOUR-NGROK-DOMAIN/webhook/meta-commerce
+```
 
-GET verification and POST events use the same path, differentiated by HTTP method.
-
-A free/ephemeral ngrok URL may change after restart. If it changes, update `N8N_WEBHOOK_URL`, restart n8n, and update the Meta callback.
+Never use `docker compose down -v` for a routine restart; it removes persistent volumes. See `DATABASES_AND_DOCKER.md`.
