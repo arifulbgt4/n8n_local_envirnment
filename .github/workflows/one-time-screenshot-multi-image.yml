@@ -1,0 +1,49 @@
+name: One-time screenshot and multi-image migration
+
+on:
+  push:
+    paths:
+      - '.github/workflows/one-time-screenshot-multi-image.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply feature migration
+        run: python3 scripts/implement_screenshot_multi_image.py
+
+      - name: Validate workflow JSON
+        run: |
+          python3 - <<'PY'
+          import json
+          for p in [
+            'workflows/modular/05_META_MESSAGING_V4_2.json',
+            'workflows/modular/02_CATALOG_SYNC_V4_2.json',
+            'workflows/modular/01C_OPERATIONS_INIT_V4_2.json',
+          ]:
+              json.load(open(p, encoding='utf-8'))
+              print('OK', p)
+          PY
+
+      - name: Validate Apps Script syntax
+        run: |
+          cp integrations/google-apps-script/PRODUCT_IMAGE_SYNC.gs /tmp/PRODUCT_IMAGE_SYNC.js
+          node --check /tmp/PRODUCT_IMAGE_SYNC.js
+
+      - name: Commit feature
+        run: |
+          rm -f .github/workflows/one-time-screenshot-multi-image.yml
+          rm -f scripts/implement_screenshot_multi_image.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: analyze product screenshots and send multiple images'
+          git push
