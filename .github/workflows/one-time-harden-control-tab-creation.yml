@@ -1,0 +1,171 @@
+name: One-time harden control tab creation
+
+on:
+  push:
+    paths:
+      - '.github/workflows/one-time-harden-control-tab-creation.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch setup workflow
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path('workflows/modular/01_SETUP_CONFIG_V4_2.json')
+          wf = json.loads(p.read_text(encoding='utf-8'))
+          nodes = {n['name']: n for n in wf['nodes']}
+          con = wf['connections']
+
+          create = nodes['02.06 - Create Missing Control Tabs']
+          create['continueOnFail'] = True
+
+          # Remove old nodes if the patch is re-run.
+          new_names = {
+              '02.05B - Prepare Control Tab Create Attempt',
+              '02.06A - Verify Control Tabs After Create',
+              '02.06B - Rebuild Remaining Control Tabs',
+              '02.06C - All Control Tabs Ready?'
+          }
+          wf['nodes'] = [n for n in wf['nodes'] if n['name'] not in new_names]
+          for name in new_names:
+              con.pop(name, None)
+
+          wf['nodes'].extend([
+            {
+              'parameters': {
+                'jsCode': "const j=$json;\nconst createAttempt=Number(j.createAttempt||0)+1;\nif(createAttempt>3){\n  throw new Error('CONTROL TAB CREATE FAILED: Google Sheets tabs are still missing after 3 verified attempts. Check Docker/network connectivity to sheets.googleapis.com and retry the bootstrap.');\n}\nreturn [{json:{...j,createAttempt}}];"
+              },
+              'id': '0205b000-0000-4000-8000-000000000001',
+              'name': '02.05B - Prepare Control Tab Create Attempt',
+              'type': 'n8n-nodes-base.code',
+              'typeVersion': 2,
+              'position': [-1600, -1020]
+            },
+            {
+              'parameters': {
+                'url': "={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $('02.05B - Prepare Control Tab Create Attempt').item.json.controlSpreadsheetId + '?fields=sheets.properties' }}",
+                'authentication': 'predefinedCredentialType',
+                'nodeCredentialType': 'googleSheetsOAuth2Api',
+                'options': {'timeout': 30000}
+              },
+              'id': '0206a000-0000-4000-8000-000000000001',
+              'name': '02.06A - Verify Control Tabs After Create',
+              'type': 'n8n-nodes-base.httpRequest',
+              'typeVersion': 4.2,
+              'position': [-1360, -1020],
+              'retryOnFail': True,
+              'maxTries': 3,
+              'waitBetweenTries': 1500
+            },
+            {
+              'parameters': {
+                'jsCode': "const ctx=$('02.05B - Prepare Control Tab Create Attempt').item.json;\nconst existing=new Set(($json.sheets||[]).map(s=>s.properties?.title).filter(Boolean));\nconst required=ctx.headers||{};\nconst missing=Object.keys(required).filter(t=>!existing.has(t));\nreturn [{json:{...ctx,missing,requests:missing.map(title=>({addSheet:{properties:{title}}})),controlTabsReady:missing.length===0}}];"
+              },
+              'id': '0206b000-0000-4000-8000-000000000001',
+              'name': '02.06B - Rebuild Remaining Control Tabs',
+              'type': 'n8n-nodes-base.code',
+              'typeVersion': 2,
+              'position': [-1120, -1020]
+            },
+            {
+              'parameters': {
+                'conditions': {
+                  'options': {'caseSensitive': True, 'leftValue': '', 'typeValidation': 'strict'},
+                  'conditions': [{
+                    'id': '0206c000-0000-4000-8000-000000000001',
+                    'leftValue': '={{ $json.controlTabsReady === true }}',
+                    'rightValue': True,
+                    'operator': {'type': 'boolean', 'operation': 'true', 'singleValue': True}
+                  }],
+                  'combinator': 'and'
+                },
+                'options': {}
+              },
+              'id': '0206c000-0000-4000-8000-000000000001',
+              'name': '02.06C - All Control Tabs Ready?',
+              'type': 'n8n-nodes-base.if',
+              'typeVersion': 2.2,
+              'position': [-880, -1020]
+            }
+          ])
+
+          # Initial missing-tabs branch now enters a bounded create attempt.
+          con['02.05A - Any Missing Control Tabs?'] = {
+              'main': [
+                  [{'node':'02.05B - Prepare Control Tab Create Attempt','type':'main','index':0}],
+                  [{'node':'02.07 - Prepare Control Header Batch','type':'main','index':0}]
+              ]
+          }
+          con['02.05B - Prepare Control Tab Create Attempt'] = {
+              'main': [[{'node':'02.06 - Create Missing Control Tabs','type':'main','index':0}]]
+          }
+          con['02.06 - Create Missing Control Tabs'] = {
+              'main': [[{'node':'02.06A - Verify Control Tabs After Create','type':'main','index':0}]]
+          }
+          con['02.06A - Verify Control Tabs After Create'] = {
+              'main': [[{'node':'02.06B - Rebuild Remaining Control Tabs','type':'main','index':0}]]
+          }
+          con['02.06B - Rebuild Remaining Control Tabs'] = {
+              'main': [[{'node':'02.06C - All Control Tabs Ready?','type':'main','index':0}]]
+          }
+          con['02.06C - All Control Tabs Ready?'] = {
+              'main': [
+                  [{'node':'02.07 - Prepare Control Header Batch','type':'main','index':0}],
+                  [{'node':'02.05B - Prepare Control Tab Create Attempt','type':'main','index':0}]
+              ]
+          }
+
+          p.write_text(json.dumps(wf, ensure_ascii=False, separators=(',', ':'))+'\n', encoding='utf-8')
+          PY
+
+      - name: Document network recovery
+        run: |
+          cat >> docs/INSTALLATION.md <<'EOF'
+
+## Google Sheets transient TLS/network resets
+
+Bootstrap tab creation is verification-driven. If Google closes the TLS socket while `02.06 - Create Missing Control Tabs` is running, the workflow continues to a metadata verification step, checks which tabs actually exist, and retries only the still-missing tabs. The create cycle is capped at three verified attempts. This prevents a lost HTTP response from causing duplicate-sheet creation while still recovering from transient `ECONNRESET` failures.
+
+If the verification request itself cannot reach Google after its built-in retries, test outbound connectivity from the n8n container with:
+
+```bash
+docker exec n8n node -e "fetch('https://sheets.googleapis.com').then(r=>console.log('HTTP',r.status)).catch(e=>{console.error(e);process.exit(1)})"
+```
+
+Any HTTP response proves DNS/TLS connectivity; the endpoint does not need to return 200 for this connectivity test.
+EOF
+
+      - name: Validate workflow JSON
+        run: |
+          python3 - <<'PY'
+          import json
+          p='workflows/modular/01_SETUP_CONFIG_V4_2.json'
+          wf=json.load(open(p, encoding='utf-8'))
+          n={x['name']:x for x in wf['nodes']}
+          assert n['02.06 - Create Missing Control Tabs'].get('continueOnFail') is True
+          assert n['02.06A - Verify Control Tabs After Create'].get('retryOnFail') is True
+          assert '02.06C - All Control Tabs Ready?' in wf['connections']
+          assert wf['connections']['02.06C - All Control Tabs Ready?']['main'][1][0]['node']=='02.05B - Prepare Control Tab Create Attempt'
+          print('OK')
+          PY
+
+      - name: Commit fix
+        run: |
+          rm -f .github/workflows/one-time-harden-control-tab-creation.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: recover control tab creation from Google connection resets'
+          git push
