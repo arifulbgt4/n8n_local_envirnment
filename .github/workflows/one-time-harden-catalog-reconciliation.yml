@@ -17,27 +17,25 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Patch catalog sync safety and reconciliation barrier
+      - name: Patch catalog reconciliation barrier
         shell: bash
         run: |
           python3 - <<'PY'
           import json
           from pathlib import Path
-          from uuid import uuid4
 
           path = Path('workflows/modular/02_CATALOG_SYNC_V4_2.json')
           data = json.loads(path.read_text(encoding='utf-8'))
-          nodes = data['nodes']
+          by_name = {n['name']: n for n in data['nodes']}
           connections = data['connections']
 
-          by_name = {n['name']: n for n in nodes}
-
-          # 1) Do not let a missing Products sheet crash the whole multi-account run.
+          # Missing Products/FAQ rows already use explicit _skip items and filter nodes.
           by_name['Get Products from Google Sheets']['continueOnFail'] = True
+          by_name['Get FAQ from Google Sheets']['continueOnFail'] = True
 
-          # 2) Catalog sync may only consume an Operations Spreadsheet after 01C
-          # has reconciled it. This prevents a newly swapped sheet from overwriting
-          # existing DB data before the DB->sheet restore is complete.
+          # Only sync a spreadsheet after 01C has reconciled/bound that exact sheet ID.
+          # This is the safety barrier that makes DB the source of truth when DB has data,
+          # while allowing a brand-new sheet to seed DB only when DB is completely empty.
           barrier = "AND COALESCE((SELECT value FROM system_settings WHERE key=('ops_sheet_bound:'||ba.id::text)),'')=ba.operations_spreadsheet_id"
           for name in ['05.01 - Load Active Accounts for Catalog Sync', '05M.01 - Load Accounts for Legacy Product Migration']:
               q = by_name[name]['parameters']['query']
@@ -45,86 +43,17 @@ jobs:
                   marker = "COALESCE(ba.operations_spreadsheet_id,'')<>''"
                   if marker not in q:
                       raise SystemExit(f'Could not locate spreadsheet predicate in {name}')
-                  q = q.replace(marker, marker + '\n' + barrier)
-                  by_name[name]['parameters']['query'] = q
+                  by_name[name]['parameters']['query'] = q.replace(marker, marker + '\n' + barrier, 1)
 
-          # 3) In Run Once for Each Item mode, returning [] is invalid. Convert
-          # error/blank rows into explicit skip items and route them around upserts.
-          pnode = by_name['Normalize Product Row']
-          pcode = pnode['parameters']['jsCode']
-          if "skipProduct" not in pcode:
-              pcode = pcode.replace(
-                  "const row=$json;\nconst val=",
-                  "const row=$json;\nif(row && row.error)return {json:{skipProduct:true,businessId:b.business_id,accountId:b.account_id,error:String(row.error)}};\nconst val=",
-                  1,
-              )
-              pcode = pcode.replace(
-                  "if(!name)return[];",
-                  "if(!name)return {json:{skipProduct:true,businessId:b.business_id,accountId:b.account_id}};",
-                  1,
-              )
-              pnode['parameters']['jsCode'] = pcode
+          # Validate existing skip/error handling in catalog sync.
+          assert '_skip' in by_name['Normalize Product Row']['parameters']['jsCode']
+          assert '_skip' in by_name['Normalize FAQ Row']['parameters']['jsCode']
+          assert connections['Normalize Product Row']['main'][0][0]['node'] == 'Filter Valid Product Rows'
+          assert connections['Normalize FAQ Row']['main'][0][0]['node'] == 'Filter Valid FAQ Rows'
+          assert connections['Filter Valid Product Rows']['main'][0][0]['node'] == 'Upsert Product Cache'
+          assert connections['Filter Valid FAQ Rows']['main'][0][0]['node'] == 'Upsert FAQ Cache'
 
-          fnode = by_name['Normalize FAQ Row']
-          fcode = fnode['parameters']['jsCode']
-          if "skipFaq" not in fcode:
-              fcode = fcode.replace(
-                  "const row=$json;const val=",
-                  "const row=$json;if(row&&row.error)return {json:{skipFaq:true,businessId:b.business_id,accountId:b.account_id,error:String(row.error)}};const val=",
-                  1,
-              )
-              fcode = fcode.replace(
-                  "if(!a)return[];",
-                  "if(!a)return {json:{skipFaq:true,businessId:b.business_id,accountId:b.account_id}};",
-                  1,
-              )
-              fnode['parameters']['jsCode'] = fcode
-
-          def ensure_if(name, left_value, position):
-              if name in by_name:
-                  return
-              node = {
-                  'parameters': {
-                      'conditions': {
-                          'options': {'caseSensitive': True, 'leftValue': '', 'typeValidation': 'strict'},
-                          'conditions': [{
-                              'id': str(uuid4()),
-                              'leftValue': left_value,
-                              'rightValue': True,
-                              'operator': {'type': 'boolean', 'operation': 'true', 'singleValue': True},
-                          }],
-                          'combinator': 'and',
-                      },
-                      'options': {},
-                  },
-                  'type': 'n8n-nodes-base.if',
-                  'typeVersion': 2.2,
-                  'position': position,
-                  'id': str(uuid4()),
-                  'name': name,
-              }
-              nodes.append(node)
-              by_name[name] = node
-
-          ensure_if('Product Row Valid?', '={{ !$json.skipProduct }}', [-760, 1380])
-          ensure_if('FAQ Row Valid?', '={{ !$json.skipFaq }}', [-760, 1600])
-
-          connections['Normalize Product Row'] = {
-              'main': [[{'node': 'Product Row Valid?', 'type': 'main', 'index': 0}]]
-          }
-          connections['Product Row Valid?'] = {
-              'main': [[{'node': 'Upsert Product Cache', 'type': 'main', 'index': 0}], []]
-          }
-          connections['Normalize FAQ Row'] = {
-              'main': [[{'node': 'FAQ Row Valid?', 'type': 'main', 'index': 0}]]
-          }
-          connections['FAQ Row Valid?'] = {
-              'main': [[{'node': 'Upsert FAQ Cache', 'type': 'main', 'index': 0}], []]
-          }
-
-          # Validate 01C already implements the required precedence:
-          # missing managed tabs are created; changed sheet + DB data -> DB wins;
-          # changed sheet + completely empty DB -> sheet seeds DB.
+          # Validate 01C already implements the requested reconciliation contract.
           ops_path = Path('workflows/modular/01C_OPERATIONS_INIT_V4_2.json')
           ops = json.loads(ops_path.read_text(encoding='utf-8'))
           ops_names = {n['name'] for n in ops['nodes']}
@@ -142,18 +71,12 @@ jobs:
           if missing:
               raise SystemExit('01C reconciliation workflow is incomplete: ' + ', '.join(sorted(missing)))
 
-          # Validate resulting catalog workflow.
-          assert by_name['Get Products from Google Sheets'].get('continueOnFail') is True
           assert barrier in by_name['05.01 - Load Active Accounts for Catalog Sync']['parameters']['query']
           assert barrier in by_name['05M.01 - Load Accounts for Legacy Product Migration']['parameters']['query']
-          assert 'skipProduct' in by_name['Normalize Product Row']['parameters']['jsCode']
-          assert 'skipFaq' in by_name['Normalize FAQ Row']['parameters']['jsCode']
-          assert connections['Normalize Product Row']['main'][0][0]['node'] == 'Product Row Valid?'
-          assert connections['Normalize FAQ Row']['main'][0][0]['node'] == 'FAQ Row Valid?'
 
           path.write_text(json.dumps(data, ensure_ascii=False, separators=(',', ':')) + '\n', encoding='utf-8')
-          print('Patched:', path)
-          print('Validated existing DB-first / empty-DB-seed behavior in:', ops_path)
+          print('Patched catalog reconciliation barrier:', path)
+          print('Validated DB-first / empty-DB-seed workflow:', ops_path)
           PY
 
       - name: Validate JSON
