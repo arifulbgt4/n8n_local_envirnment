@@ -31,3 +31,4 @@ jobs:
           git add -A
           git commit -m 'fix: remove legacy AI columns from account control config'
           git push
+# rerun after validation fix
