@@ -17,6 +17,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Patch migration for current workflow state
+        run: python3 scripts/fix_dynamic_ai_migration.py
+
       - name: Run migration
         run: python3 scripts/migrate_dynamic_ai_provider.py
 
@@ -35,6 +38,7 @@ jobs:
         run: |
           rm -f .github/workflows/one-time-dynamic-ai-provider.yml
           rm -f scripts/migrate_dynamic_ai_provider.py
+          rm -f scripts/fix_dynamic_ai_migration.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
