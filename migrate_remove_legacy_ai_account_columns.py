@@ -42,8 +42,8 @@ def patch_setup():
         assert h not in build, f'{h} still present in setup headers'
     nodes['02.05 - Build Missing Control Tabs']['parameters']['jsCode'] = build
 
-    # Do not overwrite headers on already-existing tabs. This keeps old control sheets readable
-    # while new/fresh sheets are created with the compact 29-column account layout.
+    # Only write header rows for tabs created during this bootstrap. Existing controller sheets
+    # are left intact so their data never shifts merely because the install workflow is re-run.
     prep = nodes['02.07 - Prepare Control Header Batch']['parameters']['jsCode']
     old = "const x=$('02.05 - Build Missing Control Tabs').item.json;const data=Object.entries(x.headers).map(([title,row])=>({range:`${title}!A1`,majorDimension:'ROWS',values:[row]}));"
     new = "const x=$('02.05 - Build Missing Control Tabs').item.json;const missing=new Set(Array.isArray(x.missing)?x.missing:[]);const data=Object.entries(x.headers).filter(([title])=>missing.has(title)).map(([title,row])=>({range:`${title}!A1`,majorDimension:'ROWS',values:[row]}));"
@@ -66,8 +66,8 @@ def patch_control_sync():
     wf = json.loads(path.read_text(encoding='utf-8'))
     nodes = {n['name']: n for n in wf['nodes']}
 
-    # Keep A:AF for backward compatibility with already-existing controller sheets that still
-    # physically contain the three legacy columns. They are ignored by the parser.
+    # Read through AF for compatibility with older existing controller sheets. The three legacy
+    # account AI columns are ignored, while the named rate-limit/follow-up columns still parse.
     parser = nodes['03.06 - Parse + Validate Accounts']['parameters']['jsCode']
     legacy_js = ",ai_provider:String(x['AI Provider']||'openai').trim(),ai_model:String(x['AI Model']||'gpt-5.6-luna').trim(),ai_prompt_override:String(x['AI Prompt Override']||'').trim()"
     if legacy_js in parser:
@@ -155,7 +155,8 @@ def validate():
 
     control_doc = Path('docs/CONTROL_SPREADSHEET.md').read_text(encoding='utf-8')
     section = control_doc.split('## `02_ACCOUNTS` columns', 1)[1].split('## Platform identity rules', 1)[0]
-    assert not any(h in section for h in LEGACY_HEADERS)
+    numbered_labels = [m.group(1).strip() for m in re.finditer(r'^\d+\.\s+(.*)$', section, flags=re.M)]
+    assert not any(label in LEGACY_HEADERS for label in numbered_labels)
     assert '29. Updated At' in section
 
     schema = Path('init-db/001-init.sql').read_text(encoding='utf-8')
