@@ -1,0 +1,72 @@
+name: One-time agent_app Docker setup migration
+
+on:
+  push:
+    paths:
+      - '.github/workflows/one-time-agent-app-docker-setup.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply migration
+        run: python3 scripts/implement_agent_app_docker_setup.py
+
+      - name: Validate JSON and Compose
+        run: |
+          python3 - <<'PY'
+          import json
+          for p in [
+            'workflows/modular/00_RESET_AGENT_APP_V4_2.json',
+            'workflows/modular/01_SETUP_CONFIG_V4_2.json',
+          ]:
+              json.load(open(p, encoding='utf-8'))
+              print('OK', p)
+          PY
+          cp .env.example .env
+          sed -i 's/CHANGE_ME_STRONG_POSTGRES_PASSWORD/test_agent_password_12345/g' .env
+          sed -i 's/CHANGE_ME_LONG_RANDOM_VALUE/test_n8n_encryption_key_12345678901234567890/g' .env
+          docker compose config >/dev/null
+
+      - name: Start PostgreSQL and bootstrap agent_app
+        run: |
+          docker compose up -d postgres agent-db-bootstrap
+          docker compose ps -a
+          test "$(docker compose exec -T postgres psql -U n8n -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='agent_app'")" = "1"
+          test "$(docker compose exec -T postgres psql -U n8n -d agent_app -tAc "SELECT current_database()")" = "agent_app"
+          test "$(docker compose exec -T postgres psql -U n8n -d agent_app -tAc "SELECT to_regclass('public.products')")" = "products"
+          test "$(docker compose exec -T postgres psql -U n8n -d n8n -tAc "SELECT current_database()")" = "n8n"
+
+      - name: Verify reset SQL refuses n8n database
+        run: |
+          set +e
+          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U n8n -d n8n < docs/RESET_APPLICATION_DATABASE.sql > /tmp/reset-guard.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/reset-guard.log
+          test "$code" -ne 0
+          grep -q 'SAFETY STOP' /tmp/reset-guard.log
+          docker compose exec -T postgres psql -U n8n -d n8n -tAc "SELECT current_database()" | grep -qx 'n8n'
+
+      - name: Cleanup CI containers
+        if: always()
+        run: docker compose down -v || true
+
+      - name: Commit migration
+        run: |
+          rm -f .github/workflows/one-time-agent-app-docker-setup.yml
+          rm -f scripts/implement_agent_app_docker_setup.py
+          rm -f .env
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: isolate agent_app database and automate Docker bootstrap'
+          git push
