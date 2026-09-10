@@ -18,7 +18,7 @@ cd n8n_local_envirnment
 cp .env.example .env
 ```
 
-Edit `.env`. At minimum change `POSTGRES_PASSWORD`, `N8N_ENCRYPTION_KEY`, and `OPENAI_API_KEY`.
+Edit `.env`. At minimum change `POSTGRES_PASSWORD` and `N8N_ENCRYPTION_KEY`.
 
 ## 3. Start PostgreSQL + n8n
 

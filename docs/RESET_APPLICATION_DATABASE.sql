@@ -375,3 +375,21 @@ BEGIN
       FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL;
   END IF;
 END $$;
+
+-- Account-scoped dynamic AI provider/model registry. Source of truth: Control Spreadsheet 04_AI_MODELS.
+CREATE TABLE IF NOT EXISTS ai_runtime_configs (
+  id BIGSERIAL PRIMARY KEY,
+  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,
+  config_key TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  api_key TEXT NOT NULL,
+  base_url TEXT NOT NULL DEFAULT '',
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  source_updated_at TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(account_id, config_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_runtime_configs_account_active
+  ON ai_runtime_configs(account_id, config_key) WHERE active=TRUE;

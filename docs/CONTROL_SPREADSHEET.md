@@ -8,6 +8,7 @@ Step 02 turns the one empty spreadsheet into the control plane.
 - `01_BUSINESSES`
 - `02_ACCOUNTS`
 - `03_AI_PROMPTS`
+- `04_AI_MODELS`
 - `05_SYNC_STATUS`
 - `06_EXECUTION_LOG`
 
@@ -90,6 +91,7 @@ Each account can have any number of prompt rows. `Prompt Key` is normalized to u
 
 - `INTENT_CLASSIFIER`
 - `IMAGE_PRODUCT_ANALYSIS`
+- `AUDIO_TRANSCRIPTION`
 - `PRODUCT_SEARCH_RESPONSE`
 - `ORDER_DETAILS_EXTRACT_AI`
 - `GENERAL_ANSWER_AI`
@@ -97,3 +99,19 @@ Each account can have any number of prompt rows. `Prompt Key` is normalized to u
 Prompt text supports safe placeholders such as `{{message}}`, `{{conversationState}}`, `{{businessName}}`, `{{inputSource}}`, `{{products}}`, `{{context}}`, or nested paths such as `{{context.selected_product}}`. Objects and arrays are rendered as JSON. Arbitrary JavaScript expressions are intentionally not evaluated.
 
 There is no cross-account or n8n fallback. If a required active prompt is missing, the AI call stops with a configuration error naming the missing `Prompt Key` and account. Updating, disabling, or deleting a prompt row is synced into PostgreSQL by `01B Control Spreadsheet Sync`, and affected response-cache rows are invalidated so the new prompt takes effect.
+
+## 04_AI_MODELS — account-scoped provider/model/API-key registry
+
+All AI provider, model and API-key selection is controlled from this tab. There is no fixed OpenAI/Gemini/Anthropic credential or model fallback inside n8n.
+
+Columns:
+
+`Account Key | Config Key | Provider | Model | API Key | Base URL | Active | Updated At | Notes`
+
+`Config Key=DEFAULT` is an optional account-local default. A task-specific row overrides it. Supported task keys are the prompt keys (`INTENT_CLASSIFIER`, `PRODUCT_SEARCH_RESPONSE`, `ORDER_DETAILS_EXTRACT_AI`, `GENERAL_ANSWER_AI`, `IMAGE_PRODUCT_ANALYSIS`, `AUDIO_TRANSCRIPTION`).
+
+Supported provider adapters: `openai`, `anthropic`, `gemini`, and `openai_compatible`. `openai_compatible` requires `Base URL`. Provider aliases such as `google`/`google_gemini` and `claude` are normalized during sync.
+
+Example: one Page can use `DEFAULT=anthropic`, `IMAGE_PRODUCT_ANALYSIS=gemini`, and `AUDIO_TRANSCRIPTION=openai`; another Page can use a completely different set. If neither an exact task config nor `DEFAULT` exists, the AI call fails with a configuration error instead of silently falling back to any n8n provider/model.
+
+API keys are intentionally sourced from the Control Spreadsheet as requested and are copied into PostgreSQL by `01B Control Spreadsheet Sync`. Restrict the Control Spreadsheet, PostgreSQL database, and n8n execution-data access to trusted administrators because these are secrets.
