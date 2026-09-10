@@ -7,6 +7,7 @@ Step 02 turns the one empty spreadsheet into the control plane.
 - `00_INSTALL`
 - `01_BUSINESSES`
 - `02_ACCOUNTS`
+- `03_AI_PROMPTS`
 - `05_SYNC_STATUS`
 - `06_EXECUTION_LOG`
 
@@ -74,3 +75,21 @@ If it is blank and `Auto Create Spreadsheet=TRUE`, Step 04 can create a new spre
 ## Tokens and secrets
 
 This architecture supports Meta tokens in the Control Spreadsheet because you requested spreadsheet-driven account administration. Restrict the file to trusted administrators only. A Page Access Token is not the same thing as a Verify Token or App Secret.
+
+
+## 03_AI_PROMPTS — account-scoped AI prompt registry
+
+All runtime AI prompt text is controlled from this tab. n8n contains no fallback/default business prompt text.
+
+Columns:
+
+`Account Key | Prompt Key | Prompt Text | Active | Updated At | Notes`
+
+Each account can have any number of prompt rows. `Prompt Key` is normalized to uppercase underscore form. Current runtime keys are:
+
+- `INTENT_CLASSIFIER`
+- `PRODUCT_SEARCH_RESPONSE`
+
+Prompt text supports safe placeholders such as `{{message}}`, `{{conversationState}}`, `{{businessName}}`, `{{inputSource}}`, `{{products}}`, `{{context}}`, or nested paths such as `{{context.selected_product}}`. Objects and arrays are rendered as JSON. Arbitrary JavaScript expressions are intentionally not evaluated.
+
+There is no cross-account or n8n fallback. If a required active prompt is missing, the AI call stops with a configuration error naming the missing `Prompt Key` and account. Updating, disabling, or deleting a prompt row is synced into PostgreSQL by `01B Control Spreadsheet Sync`, and affected response-cache rows are invalidated so the new prompt takes effect.

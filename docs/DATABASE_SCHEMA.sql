@@ -64,6 +64,20 @@ CREATE TABLE IF NOT EXISTS business_accounts (
 CREATE INDEX IF NOT EXISTS idx_business_accounts_verify_token ON business_accounts(verify_token) WHERE active=TRUE;
 CREATE INDEX IF NOT EXISTS idx_business_accounts_business ON business_accounts(business_id) WHERE active=TRUE;
 
+CREATE TABLE IF NOT EXISTS ai_prompts (
+  id BIGSERIAL PRIMARY KEY,
+  account_id BIGINT NOT NULL REFERENCES business_accounts(id) ON DELETE CASCADE,
+  prompt_key TEXT NOT NULL,
+  prompt_text TEXT NOT NULL,
+  content_hash TEXT NOT NULL DEFAULT '',
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  source_updated_at TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(account_id, prompt_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_prompts_account_active ON ai_prompts(account_id, prompt_key) WHERE active=TRUE;
+
 CREATE TABLE IF NOT EXISTS processed_messages (
   id BIGSERIAL PRIMARY KEY,
   platform TEXT NOT NULL,
