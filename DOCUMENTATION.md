@@ -195,20 +195,17 @@ Example:
 16. Graph API Version
 17. Reply URL
 18. Conversation URL Template
-19. AI Provider
-20. AI Model
-21. AI Prompt Override
-22. Max Messages Per Minute
-23. Max AI Turns Per Hour
-24. Max AI Turns Per Day
-25. Estimated Tokens Per Turn
-26. Max Estimated Tokens Per Day
-27. Followup Enabled
-28. Followup 1 Minutes
-29. Followup 2 Minutes
-30. Auto Human On Manual Reply
-31. Active
-32. Updated At
+19. Max Messages Per Minute
+20. Max AI Turns Per Hour
+21. Max AI Turns Per Day
+22. Estimated Tokens Per Turn
+23. Max Estimated Tokens Per Day
+24. Followup Enabled
+25. Followup 1 Minutes
+26. Followup 2 Minutes
+27. Auto Human On Manual Reply
+28. Active
+29. Updated At
 
 ## Platform identity rules
 

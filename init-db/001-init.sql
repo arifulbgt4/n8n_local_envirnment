@@ -51,9 +51,6 @@ CREATE TABLE IF NOT EXISTS business_accounts (
   faq_sheet_name TEXT NOT NULL DEFAULT 'FAQ',
   order_sheet_name TEXT NOT NULL DEFAULT 'Orders',
   human_support_sheet_name TEXT NOT NULL DEFAULT 'HumanSupportQueue',
-  ai_provider TEXT NOT NULL DEFAULT 'openai',
-  ai_model TEXT NOT NULL DEFAULT 'gpt-5.6-luna',
-  ai_prompt_override TEXT NOT NULL DEFAULT '',
   auto_human_on_manual_reply BOOLEAN NOT NULL DEFAULT TRUE,
   max_messages_per_minute INTEGER NOT NULL DEFAULT 8,
   max_ai_turns_per_hour INTEGER NOT NULL DEFAULT 20,
@@ -71,6 +68,11 @@ CREATE TABLE IF NOT EXISTS business_accounts (
 );
 CREATE INDEX IF NOT EXISTS idx_business_accounts_verify_token ON business_accounts(verify_token) WHERE active=TRUE;
 CREATE INDEX IF NOT EXISTS idx_business_accounts_business ON business_accounts(business_id) WHERE active=TRUE;
+
+-- Legacy account-level AI fields are obsolete. Runtime AI configuration lives only in 03_AI_PROMPTS / 04_AI_MODELS.
+ALTER TABLE business_accounts DROP COLUMN IF EXISTS ai_provider;
+ALTER TABLE business_accounts DROP COLUMN IF EXISTS ai_model;
+ALTER TABLE business_accounts DROP COLUMN IF EXISTS ai_prompt_override;
 
 CREATE TABLE IF NOT EXISTS ai_prompts (
   id BIGSERIAL PRIMARY KEY,
